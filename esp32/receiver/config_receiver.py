@@ -1,0 +1,10 @@
+# Network
+SSID = "MotionCaptureAP"
+PASSWORD = "password123"
+AP_IP = "192.168.4.1"
+SUBNET_MASK = "255.255.255.0"
+NODE_IP = "192.168.4.2"
+
+# Ports
+DATA_PORT = 5005
+NODE_CMD_PORT = 5006
