@@ -22,16 +22,16 @@ CMD_QUIT = 'Q'
 CMD_DEBUG = 'D'
 CMD_PING = 'P'
 
+# Global emergency stop flag for consistent thread termination
+emergency_stop = False
+emergency_lock = _thread.allocate_lock()
+
 # Hardware watchdog timer to recover from crashes
 watchdog = None
 try:
     watchdog = machine.WDT(timeout=30000)  # 30 second timeout
 except Exception as e:
     print(f"Warning: Could not initialize watchdog: {e}")
-
-# Flag to enable REPL access when things go wrong
-EMERGENCY_REPL_ENABLED = True
-EMERGENCY_REPL_PIN = 0  # Boot button, usually GPIO0
 
 # Log levels for better filtering
 LOG_DEBUG = 0
@@ -42,13 +42,20 @@ LOG_ERROR = 3
 # Current log level
 current_log_level = LOG_INFO
 
-# Check for emergency REPL activation
-if EMERGENCY_REPL_ENABLED:
-    emergency_pin = machine.Pin(EMERGENCY_REPL_PIN, machine.Pin.IN, machine.Pin.PULL_UP)
-    if emergency_pin.value() == 0:
-        print("!!! EMERGENCY REPL ACTIVATED - MAIN SCRIPT WILL NOT RUN !!!")
-        print("Type 'import machine' and then 'machine.soft_reset()' to restart")
-        sys.exit(0)  # Exit without running the main script
+def check_emergency_stop():
+    """Check if emergency stop is activated"""
+    global emergency_stop
+    
+    with emergency_lock:
+        return emergency_stop
+
+def set_emergency_stop():
+    """Set emergency stop flag"""
+    global emergency_stop
+    
+    with emergency_lock:
+        emergency_stop = True
+
 
 def feed_watchdog():
     """Feed the watchdog timer if it's enabled"""
@@ -267,7 +274,7 @@ class TCPServer:
         
     def run(self):
         """Main accept loop that handles incoming connections with watchdog feeding"""
-        while self.running:
+        while self.running and not check_emergency_stop():
             try:
                 # Feed watchdog in accept loop
                 feed_watchdog()
@@ -289,6 +296,7 @@ class TCPServer:
             except KeyboardInterrupt:
                 log("Keyboard interrupt in TCP server - stopping", LOG_WARNING)
                 self.running = False
+                set_emergency_stop()  # Set the emergency stop flag
                 break
             except Exception as e:
                 log(f"Unexpected error in TCP server: {e}", LOG_ERROR)
@@ -338,7 +346,7 @@ class TCPServer:
             client_sock.setblocking(False)
             last_activity = time.ticks_ms()
             
-            while self.running:
+            while self.running and not check_emergency_stop():
                 # Feed watchdog
                 feed_watchdog()
                 
@@ -347,7 +355,7 @@ class TCPServer:
                     r, _, _ = select.select([client_sock], [], [], 1)
                     
                     # If not running anymore, break the loop
-                    if not self.running:
+                    if not self.running or check_emergency_stop():
                         log("TCP server shutdown requested - closing client")
                         break
                     
@@ -418,6 +426,7 @@ class TCPServer:
                 except KeyboardInterrupt:
                     log("Keyboard interrupt in client handler")
                     self.running = False
+                    set_emergency_stop()  # Set the emergency stop flag
                     break
                 except Exception as e:
                     log(f"Unexpected error in client handling: {e}", LOG_ERROR)
@@ -547,7 +556,7 @@ class UDPServer:
         """Receive and process UDP data with improved reliability and packet validation"""
         log("UDP data streaming started")
         
-        while self.running:
+        while self.running and not check_emergency_stop():
             try:
                 # Feed watchdog
                 feed_watchdog()
@@ -809,14 +818,8 @@ class CommandHandler:
         self.exit_requested = True
         self.running = False
         
-        # Force exit if needed
-        try:
-            # Give a moment for cleanup to complete
-            time.sleep_ms(1000)
-            sys.exit(0)
-        except Exception:
-            # If sys.exit fails, at least the flags are set
-            pass
+        # Set emergency stop flag
+        set_emergency_stop()
             
         return True
 
@@ -892,7 +895,7 @@ class CommandHandler:
         """Read commands from CDC USB (STDIN) more reliably with watchdog feeding"""
         buffer = ""
         
-        while self.running:
+        while self.running and not check_emergency_stop():
             try:
                 # Feed watchdog
                 feed_watchdog()
@@ -933,8 +936,9 @@ def system_status_thread(tcp_server, network_manager, cmd_handler):
     
     try:
         def report_status(timer):
-            if cmd_handler.exit_requested:
-                timer.deinit()  # Stop the timer if exit requested
+            if cmd_handler.exit_requested or check_emergency_stop():
+                if hasattr(timer, 'deinit'):
+                    timer.deinit()  # Stop the timer if exit requested
                 return
                 
             try:
@@ -986,53 +990,72 @@ def system_status_thread(tcp_server, network_manager, cmd_handler):
             report_status(None)
             
             # Keep this thread alive but with minimal resource usage
-            while not cmd_handler.exit_requested:
+            while not cmd_handler.exit_requested and not check_emergency_stop():
                 time.sleep_ms(1000)
                 feed_watchdog()
                 
             # Clean up timer
-            status_timer.deinit()
+            if hasattr(status_timer, 'deinit'):
+                status_timer.deinit()
                 
         except Exception:
             # Fallback to basic sleep loop if Timer is not available
-            while not cmd_handler.exit_requested:
+            while not cmd_handler.exit_requested and not check_emergency_stop():
                 report_status(None)  # Use the same function with None as timer
                 
                 # Sleep in smaller chunks to respond to exit request faster
                 for _ in range(60):
-                    if cmd_handler.exit_requested:
+                    if cmd_handler.exit_requested or check_emergency_stop():
                         break
                     time.sleep_ms(1000)
                     feed_watchdog()
     
     except KeyboardInterrupt:
         log("Keyboard interrupt in status thread", LOG_WARNING)
+        set_emergency_stop()  # Set the emergency stop flag
     except Exception as e:
         log(f"Error in status thread: {e}", LOG_ERROR)
 
 def cleanup_resources(tcp_server, network_manager, cmd_handler):
     """
-    Stop all threads and clean up resources with robust error handling
+    Stop all threads and clean up resources with more thorough error handling
     """
     log("Cleaning up resources...")
     
-    # Stop the UDP server if running
+    # First disable watchdog to prevent resets during cleanup
+    global watchdog
+    if watchdog:
+        try:
+            # Some ESP32 implementations allow disabling the watchdog
+            if hasattr(watchdog, 'deinit'):
+                watchdog.deinit()
+        except Exception:
+            pass
+    
+    # Stop sensor reading if active
     if cmd_handler and hasattr(cmd_handler, 'udp_server') and cmd_handler.udp_server:
         try:
             cmd_handler.udp_server.stop()
+            log("UDP server stopped")
         except Exception as e:
             log(f"Error stopping UDP server: {e}", LOG_DEBUG)
         cmd_handler.udp_server = None
     
+    # Close UDP socket
+    if network_manager and hasattr(network_manager, 'udp_socket') and network_manager.udp_socket:
+        try:
+            network_manager.udp_socket.close()
+            log("UDP socket closed")
+        except Exception as e:
+            log(f"Error closing UDP socket: {e}", LOG_DEBUG)
+        network_manager.udp_socket = None
+    
     # Stop the TCP server
     if tcp_server:
         try:
-            # First try using stop method if it exists
             if hasattr(tcp_server, 'stop'):
                 tcp_server.stop()
             else:
-                # Otherwise manually stop by settings flags and closing connections
-                log("Using manual TCP server shutdown", LOG_DEBUG)
                 if hasattr(tcp_server, 'running'):
                     tcp_server.running = False
                 
@@ -1042,21 +1065,45 @@ def cleanup_resources(tcp_server, network_manager, cmd_handler):
                     except Exception:
                         pass
                     tcp_server.node_conn = None
+            log("TCP server stopped")
         except Exception as e:
             log(f"Error stopping TCP server: {e}", LOG_DEBUG)
     
-    # Clean up network resources
-    if network_manager:
-        network_manager.cleanup()
+    # Close TCP socket
+    if network_manager and hasattr(network_manager, 'tcp_socket') and network_manager.tcp_socket:
+        try:
+            network_manager.tcp_socket.close()
+            log("TCP socket closed")
+        except Exception as e:
+            log(f"Error closing TCP socket: {e}", LOG_DEBUG)
+        network_manager.tcp_socket = None
+    
+    # Stop AP if active
+    if network_manager and hasattr(network_manager, 'ap'):
+        try:
+            network_manager.ap.active(False)
+            log("WiFi AP deactivated")
+        except Exception as e:
+            log(f"Error deactivating AP: {e}", LOG_DEBUG)
     
     # Run garbage collection
     gc.collect()
     
-    # Wait for threads to finish
-    time.sleep_ms(1000)
+    # Give more time for threads to finish - increase from 500ms to 2000ms
+    log("Waiting for threads to terminate...")
+    time.sleep_ms(2000)
+    
+    # Try to reset UART/USB state
+    try:
+        import machine
+        uart = machine.UART(0, 115200)  # Assuming UART0 is used for USB
+        uart.deinit()
+        log("UART reset")
+    except Exception:
+        pass
     
     log("Resources cleaned up")
-    return True  # Return True to indicate successful cleanup
+    return True
 
 def safe_mode():
     """
@@ -1096,13 +1143,19 @@ def safe_mode():
 
 def main():
     """Main function with improved error handling and recovery"""
+    print("\n" * 2)
     print("============================================")
-    print("MOTION CAPTURE RECEIVER")
+    print("MOTION CAPTURE RECEIVER - STARTING")
     print("Press BOOT button at startup to enter emergency REPL mode")
     print("Send 'Q' command to exit cleanly")
     print("Press Ctrl+C to enter REPL mode anytime")
     print(f"Free memory: {gc.mem_free()} bytes")
     print("============================================")
+    
+    # Reset emergency stop flag
+    global emergency_stop
+    with emergency_lock:
+        emergency_stop = False
     
     # Validate config
     if not validate_config():
@@ -1120,7 +1173,7 @@ def main():
     max_failures = 3
     
     try:
-        while not exit_requested:
+        while not exit_requested and not check_emergency_stop():
             try:
                 # Feed watchdog
                 feed_watchdog()
@@ -1162,12 +1215,12 @@ def main():
                 # Start the status thread
                 _thread.start_new_thread(system_status_thread, (tcp_server, net_mgr, cmd_handler))
                 
-                log("Receiver is running. Awaiting short code commands from the Controller...")
+                log("Receiver is running. Awaiting commands from the Controller...")
                 log("Press Ctrl+C to enter REPL mode")
                 log("Use 'Q' command for clean exit")
                 
-                # Main loop with health checks
-                while not exit_requested:
+                # Main thread's health monitoring loop
+                while not exit_requested and not check_emergency_stop():
                     # Feed watchdog
                     feed_watchdog()
                     
@@ -1179,62 +1232,54 @@ def main():
                     
                     # Check AP status periodically
                     if not net_mgr.ap.active():
-                        if not exit_requested:
+                        if not exit_requested and not check_emergency_stop():
                             log("WiFi AP has stopped. Restarting...", LOG_WARNING)
                             break
                     
-                    # Check for connected clients periodically
-                    try:
-                        stations = net_mgr.ap.status('stations')
-                        if stations:
-                            # Only log if changed from previous check
-                            if hasattr(net_mgr, 'last_station_count') and net_mgr.last_station_count != len(stations):
-                                log(f"Connected devices: {len(stations)}", LOG_DEBUG)
-                            net_mgr.last_station_count = len(stations)
-                    except Exception:
-                        # Not all MicroPython implementations support this
-                        pass
-                        
                     # Run garbage collection occasionally
                     if time.ticks_ms() % 60000 < 1000:  # roughly once per minute
                         gc.collect()
                         
-                    time.sleep_ms(1000)  # Short sleep to allow keyboard interrupts
+                    time.sleep_ms(1000)  # Check health every second
                     
             except KeyboardInterrupt:
-                # Handle Ctrl+C gracefully
-                log("Keyboard interrupt received, exiting...", LOG_WARNING)
-                exit_requested = True
-                
-                # Force immediate exit after cleanup
-                cleanup_resources(tcp_server, net_mgr, cmd_handler)
+                # Clean shutdown on CTRL+C
                 print("\n" * 3)
                 print("============================================")
-                print("KEYBOARD INTERRUPT - FORCING EXIT")
+                print("KEYBOARD INTERRUPT DETECTED - FORCING EXIT")
                 print("============================================")
-                sys.exit(0)
+                
+                # Set emergency stop flag
+                set_emergency_stop()
+                
+                # Clean up resources
+                cleanup_resources(tcp_server, net_mgr, cmd_handler)
+                break
                 
             except Exception as e:
-                if not exit_requested:
+                if not exit_requested and not check_emergency_stop():
                     log(f"Unexpected error in main loop: {e}", LOG_ERROR)
                     failures += 1
                     if failures >= max_failures:
                         log("Too many consecutive failures, entering safe mode", LOG_ERROR)
                         safe_mode()
                         return
-                    time.sleep_ms(5000)  # Wait before trying to restart
+                    time.sleep_ms(5000)  # Wait before retrying
                 else:
                     break
     
     except KeyboardInterrupt:
-        # Final KeyboardInterrupt handler in case it's caught outside the inner loop
-        log("Keyboard interrupt received, exiting to REPL...", LOG_WARNING)
-        cleanup_resources(tcp_server, net_mgr, cmd_handler)
+        # Final KeyboardInterrupt handler
         print("\n" * 3)
         print("============================================")
-        print("KEYBOARD INTERRUPT - FORCING EXIT")
+        print("KEYBOARD INTERRUPT DETECTED - FORCING EXIT")
         print("============================================")
-        sys.exit(0)
+        
+        # Set emergency stop flag
+        set_emergency_stop()
+        
+        # Clean up resources
+        cleanup_resources(tcp_server, net_mgr, cmd_handler)
     
     # Final cleanup
     cleanup_resources(tcp_server, net_mgr, cmd_handler)
@@ -1243,9 +1288,6 @@ def main():
     print("MOTION CAPTURE RECEIVER STOPPED")
     print("Type 'import machine' and then 'machine.soft_reset()' to restart")
     print("============================================")
-    
-    # Force exit
-    sys.exit(0)
 
 if __name__ == "__main__":
     try:
