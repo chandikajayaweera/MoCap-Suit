@@ -448,6 +448,12 @@ class TCPServer:
         Returns:
             (success, response) tuple
         """
+        # Use longer timeout for initialization and sensor check commands
+        if command_code == 'I':  # Sensor initialization
+            timeout_sec = 20  # Increase to 20 seconds
+        elif command_code == 'C':  # Sensor check
+            timeout_sec = 10  # Increase to 10 seconds
+            
         cmd_sock = None
         try:
             # Create a new socket for the command connection
