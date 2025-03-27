@@ -1,4 +1,4 @@
-# main.py (node) - Improved version
+# main.py (node) - Improved version with fixes
 import network
 import socket
 import machine
@@ -48,7 +48,7 @@ except Exception as e:
 SENSOR_NAMES = [
     "Right Lower Leg",
     "Right Upper Leg",
-    "Left Lower Leg", 
+    "Left Lower Leg",
     "Left Upper Leg",
     "Left Lower Arm",
     "Left Upper Arm",
@@ -118,6 +118,12 @@ def connect_wifi():
     time.sleep_ms(500)  # Reduced sleep time
     sta.active(True)
     
+    # FIX: Set static IP configuration BEFORE connection attempt
+    try:
+        sta.ifconfig((cfg.NODE_IP, cfg.SUBNET_MASK, cfg.GATEWAY, cfg.GATEWAY))
+    except Exception as e:
+        log(f"Error setting static IP: {e}", LOG_ERROR)
+    
     # Try connecting multiple times with progressive backoff
     max_attempts = 5  # Increased from 3
     for attempt in range(max_attempts):
@@ -134,20 +140,15 @@ def connect_wifi():
                 feed_watchdog()
                 
             if sta.isconnected():
-                # Set a static IP configuration
+                log(f"Connected to WiFi: {sta.ifconfig()}")
+                # Store BSSID for more reliable reconnections
                 try:
-                    sta.ifconfig((cfg.NODE_IP, cfg.SUBNET_MASK, cfg.GATEWAY, cfg.GATEWAY))
-                    log(f"Connected to WiFi: {sta.ifconfig()}")
-                    # Store BSSID for more reliable reconnections
-                    try:
-                        bssid = sta.config('bssid')
-                        bssid_str = ":".join(["{:02x}".format(b) for b in bssid])
-                        log("Connected to AP with BSSID: " + bssid_str, LOG_DEBUG)
-                    except Exception:
-                        log("Connected to AP (BSSID not available)", LOG_DEBUG)
-                    return True
-                except Exception as e:
-                    log(f"Error setting static IP: {e}", LOG_ERROR)
+                    bssid = sta.config('bssid')
+                    bssid_str = ":".join(["{:02x}".format(b) for b in bssid])
+                    log("Connected to AP with BSSID: " + bssid_str, LOG_DEBUG)
+                except Exception:
+                    log("Connected to AP (BSSID not available)", LOG_DEBUG)
+                return True
             
             # Progressive backoff before next attempt
             backoff = min(2**attempt, 30)  # Exponential backoff with 30s max
@@ -177,6 +178,9 @@ def receiver_connection_thread():
             client_sock.settimeout(5.0)
             client_sock.connect((cfg.RECEIVER_IP, cfg.TCP_PORT))
             log(f"Connected to receiver at {cfg.RECEIVER_IP}:{cfg.TCP_PORT}")
+            
+            # FIX: Set timeout once when establishing connection rather than on every log call
+            client_sock.settimeout(0.5)  # Set a reasonable timeout for all operations
             
             # Store the connection
             with tcp_lock:
@@ -921,17 +925,13 @@ def handle_command_client(client_sock, client_addr, command_handlers):
 def system_status_thread():
     """
     Periodically check and report system status
-    using MicroPython's machine.Timer for more precise timing
+    using a sleep-based approach for better reliability
     """
     start_time = time.ticks_ms()
     
-    # Use a timer instead of sleep loop for more precise timing
+    # FIX: Replace timer with sleep-based loop for better reliability
     try:
-        def report_status(timer):
-            if check_emergency_stop():
-                timer.deinit()  # Stop the timer if emergency stop
-                return
-                
+        while not check_emergency_stop():
             try:
                 # Feed watchdog
                 feed_watchdog()
@@ -965,35 +965,21 @@ def system_status_thread():
                 # Run garbage collection to prevent memory issues
                 gc.collect()
                 
+                # Sleep for 60 seconds (with small chunks to allow interrupt)
+                for _ in range(60):
+                    if check_emergency_stop():
+                        break
+                    time.sleep(1)
+                    feed_watchdog()
+                
             except Exception as e:
                 log(f"Error in status thread: {e}", LOG_ERROR)
-        
-        # Create a timer that triggers every 60 seconds
-        status_timer = machine.Timer(-1)
-        status_timer.init(period=60000, mode=machine.Timer.PERIODIC, callback=report_status)
-        
-        # Initial status report
-        report_status(None)
-        
-        # Keep this thread alive but with minimal resource usage
-        while not check_emergency_stop():
-            time.sleep_ms(1000)
-            feed_watchdog()
-            
-        # Clean up timer
-        status_timer.deinit()
-            
+                time.sleep(5)  # Short sleep on error before retry
+                
+    except KeyboardInterrupt:
+        log("Keyboard interrupt in status thread", LOG_WARNING)
     except Exception as e:
-        log(f"Error setting up status timer: {e}", LOG_ERROR)
-        # Fallback to basic sleep loop
-        while not check_emergency_stop():
-            try:
-                # Similar status reporting code here
-                time.sleep_ms(60000)  # 60 seconds
-                feed_watchdog()
-            except Exception as e:
-                log(f"Error in fallback status thread: {e}", LOG_ERROR)
-                time.sleep_ms(5000)  # Shorter interval on error
+        log(f"Error in status thread: {e}", LOG_ERROR)
 
 def cleanup_resources():
     """Stop all threads and clean up resources"""
@@ -1158,6 +1144,13 @@ def main():
                             log(f"Reconnection attempt {attempt+1}/3")
                             sta.disconnect()
                             time.sleep_ms(500)
+                            
+                            # FIX: Set static IP before reconnection attempt
+                            try:
+                                sta.ifconfig((cfg.NODE_IP, cfg.SUBNET_MASK, cfg.GATEWAY, cfg.GATEWAY))
+                            except Exception as e:
+                                log(f"Error setting static IP: {e}", LOG_ERROR)
+                                
                             sta.connect(cfg.SSID, cfg.PASSWORD)
                             
                             # Wait for connection with timeout
@@ -1165,7 +1158,6 @@ def main():
                                 if sta.isconnected():
                                     reconnect_success = True
                                     log("WiFi reconnected successfully")
-                                    sta.ifconfig((cfg.NODE_IP, cfg.SUBNET_MASK, cfg.GATEWAY, cfg.GATEWAY))
                                     break
                                 time.sleep_ms(500)
                                 feed_watchdog()

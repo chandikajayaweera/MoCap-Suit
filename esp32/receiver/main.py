@@ -1,4 +1,4 @@
-# main.py (receiver) - Improved version
+# main.py (receiver) - Improved version with bug fixes
 import network
 import socket
 import sys
@@ -39,8 +39,9 @@ LOG_INFO = 1
 LOG_WARNING = 2
 LOG_ERROR = 3
 
-# Current log level
+# Current log level with thread-safe access
 current_log_level = LOG_INFO
+log_level_lock = _thread.allocate_lock()  # Lock for thread safety
 
 def check_emergency_stop():
     """Check if emergency stop is activated"""
@@ -77,9 +78,10 @@ def log(message, level=LOG_INFO, source="RECEIVER"):
     """
     global current_log_level
     
-    # Skip messages below current log level
-    if level < current_log_level:
-        return
+    # Skip messages below current log level with thread safety
+    with log_level_lock:
+        if level < current_log_level:
+            return
     
     # Get log level prefix
     level_prefix = ""
@@ -124,45 +126,58 @@ class NetworkManager:
         self.clients = []  # Track connected clients
 
     def start_ap(self):
-        """Start WiFi access point with improved reliability"""
-        try:
-            self.ap.active(False)  # First deactivate
-            time.sleep_ms(500)     # Shorter wait
-            self.ap.active(True)   # Then activate
-            
-            # Configure the access point with maximum compatibility
-            self.ap.config(
-                essid=cfg.SSID,
-                password=cfg.PASSWORD,
-                authmode=network.AUTH_WPA_WPA2_PSK,
-                channel=6,  # Use a commonly available channel
-                hidden=False  # Make it visible for easier troubleshooting
-            )
-            
-            # Set IP configuration
-            self.ap.ifconfig((cfg.AP_IP, cfg.SUBNET_MASK, cfg.AP_IP, cfg.AP_IP))
-            
-            # Wait for the AP to start with timeout and watchdog feeding
-            start_time = time.ticks_ms()
-            while time.ticks_diff(time.ticks_ms(), start_time) < 10000:  # 10-second timeout
-                feed_watchdog()
-                if self.ap.active():
-                    try:
-                        mac = self.ap.config('mac')
-                        mac_str = ":".join(["{:02x}".format(b) for b in mac])
-                        log("Access Point started successfully! SSID: " + cfg.SSID)
-                        log("AP IP: " + cfg.AP_IP + ", MAC: " + mac_str)
-                    except Exception:
-                        log("Access Point started successfully! SSID: " + cfg.SSID)
-                        log("AP IP: " + cfg.AP_IP)
-                    return True
-                time.sleep_ms(500)
+        """Start WiFi access point with improved reliability and retry logic"""
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                self.ap.active(False)  # First deactivate
+                time.sleep_ms(500)     # Shorter wait
+                self.ap.active(True)   # Then activate
                 
-            log("Failed to start Access Point within timeout period.", LOG_ERROR)
-            return False
-        except OSError as e:
-            log(f"Error starting Access Point: {e}", LOG_ERROR)
-            return False
+                # Configure the access point with maximum compatibility
+                self.ap.config(
+                    essid=cfg.SSID,
+                    password=cfg.PASSWORD,
+                    authmode=network.AUTH_WPA_WPA2_PSK,
+                    channel=6,  # Use a commonly available channel
+                    hidden=False  # Make it visible for easier troubleshooting
+                )
+                
+                # Set IP configuration
+                self.ap.ifconfig((cfg.AP_IP, cfg.SUBNET_MASK, cfg.AP_IP, cfg.AP_IP))
+                
+                # Wait for the AP to start with timeout and watchdog feeding
+                start_time = time.ticks_ms()
+                while time.ticks_diff(time.ticks_ms(), start_time) < 10000:  # 10-second timeout
+                    feed_watchdog()
+                    if self.ap.active():
+                        try:
+                            mac = self.ap.config('mac')
+                            mac_str = ":".join(["{:02x}".format(b) for b in mac])
+                            log("Access Point started successfully! SSID: " + cfg.SSID)
+                            log("AP IP: " + cfg.AP_IP + ", MAC: " + mac_str)
+                        except Exception:
+                            log("Access Point started successfully! SSID: " + cfg.SSID)
+                            log("AP IP: " + cfg.AP_IP)
+                        return True
+                    time.sleep_ms(500)
+                
+                # AP didn't start within timeout, try again if not the last attempt
+                if attempt < max_attempts - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff
+                    log(f"AP start failed (attempt {attempt+1}), retrying in {wait_time}s...", LOG_WARNING)
+                    time.sleep(wait_time)
+                else:
+                    log("Failed to start Access Point after all attempts.", LOG_ERROR)
+            except OSError as e:
+                if attempt < max_attempts - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff
+                    log(f"Error starting AP (attempt {attempt+1}): {e}, retrying in {wait_time}s...", LOG_WARNING)
+                    time.sleep(wait_time)
+                else:
+                    log(f"Final error starting Access Point: {e}", LOG_ERROR)
+        
+        return False
 
     def create_tcp_socket(self):
         """Create TCP socket with better error handling and socket options"""
@@ -265,12 +280,23 @@ class TCPServer:
         self.tcp_socket = tcp_socket
         self.node_conn = None
         self.running = True
-        self.last_heartbeat = 0
-        # Thread-safe lock for node_conn access
+        self._last_heartbeat = 0
+        # Thread-safe lock for node_conn and heartbeat access
         self.conn_lock = _thread.allocate_lock()
+        self.heartbeat_lock = _thread.allocate_lock()
         
         # Pre-allocate receive buffer
         self.recv_buffer = bytearray(4096)
+        
+    @property
+    def last_heartbeat(self):
+        with self.heartbeat_lock:
+            return self._last_heartbeat
+              
+    @last_heartbeat.setter
+    def last_heartbeat(self, value):
+        with self.heartbeat_lock:
+            self._last_heartbeat = value
         
     def run(self):
         """Main accept loop that handles incoming connections with watchdog feeding"""
@@ -280,24 +306,21 @@ class TCPServer:
                 feed_watchdog()
                 
                 # Accept with timeout to allow for interruption
-                if hasattr(self.tcp_socket, 'settimeout'):
-                    self.tcp_socket.settimeout(3.0)
-                client_sock, addr = self.tcp_socket.accept()
-                log(f"TCP connection established from {addr}")
-                self.handle_client(client_sock, addr)
+                self.tcp_socket.settimeout(3.0)
+                client_sock, client_addr = self.tcp_socket.accept()
+                log(f"TCP connection established from {client_addr}")
+                
+                # Handle the client in a new thread to avoid blocking new connections
+                _thread.start_new_thread(self.handle_client, (client_sock, client_addr))
+                
             except OSError as e:
                 error_str = str(e).lower()
                 if "timed out" in error_str or "etimedout" in error_str:
-                    # This is normal with timeout, continue
+                    # This is normal with timeout - do not log
                     continue
                 elif self.running:  # Only log if we're still supposed to be running
                     log(f"Error accepting TCP connection: {e}", LOG_WARNING)
                     time.sleep_ms(1000)
-            except KeyboardInterrupt:
-                log("Keyboard interrupt in TCP server - stopping", LOG_WARNING)
-                self.running = False
-                set_emergency_stop()  # Set the emergency stop flag
-                break
             except Exception as e:
                 log(f"Unexpected error in TCP server: {e}", LOG_ERROR)
                 time.sleep_ms(1000)
@@ -337,8 +360,9 @@ class TCPServer:
             if self.node_conn is not None:
                 try:
                     self.node_conn.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log(f"Error closing previous node connection: {e}", LOG_DEBUG)
+                self.node_conn = None
             self.node_conn = client_sock
             
         try:
@@ -413,10 +437,7 @@ class TCPServer:
                                 pass
                             else:
                                 raise
-                        except Exception as e:
-                            log(f"Error reading from socket: {str(e)}", LOG_WARNING)
-                            break
-                            
+                    
                     # Check for inactivity timeout (heartbeat-based)
                     current_time = time.ticks_ms()
                     time_since_last_activity = time.ticks_diff(current_time, last_activity)
@@ -500,7 +521,6 @@ class TCPServer:
                             sys.stdout.write(f"LOG:[NODE] Command successful: {message}\n")
                             if hasattr(sys.stdout, "flush"):
                                 sys.stdout.flush()
-                            cmd_sock.close()
                             return True, message
                         else:
                             log(f"Error response from node: {message}", LOG_WARNING)
@@ -508,30 +528,27 @@ class TCPServer:
                             sys.stdout.write(f"LOG:[NODE] Command failed: {message}\n")
                             if hasattr(sys.stdout, "flush"):
                                 sys.stdout.flush()
-                            cmd_sock.close()
                             return False, message
                     else:
                         log(f"Empty response from node after command: {command_code}", LOG_WARNING)
-                        cmd_sock.close()
                         return False, "Empty response"
                 except Exception as e:
                     # Use general exception handling for better compatibility
                     log("Response error from node after command: {} - {}".format(command_code, e), LOG_WARNING)
-                    cmd_sock.close()
                     return False, "Error: {}".format(e)
             else:
-                cmd_sock.close()
                 return True, "Command sent (no response requested)"
                     
         except Exception as e:
             log(f"Error sending command to node: {str(e)}", LOG_ERROR)
-            # Try to clean up the socket
-            try:
-                if cmd_sock:
-                    cmd_sock.close()
-            except Exception:
-                pass
             return False, f"Error: {e}"
+        finally:
+            # Always clean up the socket in a finally block
+            if cmd_sock:
+                try:
+                    cmd_sock.close()
+                except Exception:
+                    pass
 
 class UDPServer:
     """
@@ -585,26 +602,37 @@ class UDPServer:
                         # Convert data to string for parsing
                         data_str = data.decode('utf-8')
                         
+                        # Validate packet structure
+                        if not data_str.startswith("SEQ:"):
+                            raise ValueError("Invalid packet format - missing SEQ: prefix")
+                            
+                        parts = data_str.split(',')
+                        if len(parts) < 2:
+                            raise ValueError("Incomplete packet - insufficient data")
+                        
                         # Extract sequence number
-                        if data_str.startswith("SEQ:"):
-                            seq_part = data_str.split(',')[0]
+                        seq_part = parts[0]
+                        try:
                             seq = int(seq_part.split(':')[1])
+                        except (IndexError, ValueError):
+                            raise ValueError("Invalid sequence number format")
                             
-                            # Check for packet loss if we have a previous sequence
-                            if self.last_seq is not None:
-                                expected_seq = (self.last_seq + 1) % 65536
-                                if seq != expected_seq:
-                                    lost = (seq - expected_seq) % 65536
-                                    if lost > 0 and lost < 1000:  # Sanity check for reasonable loss
-                                        log("Packet loss detected: {} packets missing".format(lost), LOG_WARNING)
-                            self.last_seq = seq
-                            
-                            # Format data for better readability when displayed to user
-                            formatted_data = "QUAT_DATA: " + data_str
-                            data = formatted_data.encode('utf-8')
+                        # Check for packet loss if we have a previous sequence
+                        if self.last_seq is not None:
+                            expected_seq = (self.last_seq + 1) % 65536
+                            if seq != expected_seq:
+                                lost = (seq - expected_seq) % 65536
+                                if lost > 0 and lost < 1000:  # Sanity check for reasonable loss
+                                    log("Packet loss detected: {} packets missing".format(lost), LOG_WARNING)
+                        self.last_seq = seq
+                        
+                        # Format data for better readability when displayed to user
+                        formatted_data = "QUAT_DATA: " + data_str
+                        data = formatted_data.encode('utf-8')
                         
                     except Exception as e:
                         log("Error parsing sensor data: {}".format(e), LOG_DEBUG)
+                        # Continue processing - don't discard potentially valuable data
                     
                     # Log statistics periodically
                     current_time = time.ticks_ms()
@@ -780,26 +808,40 @@ class CommandHandler:
         return True
 
     def check_sensors(self, params=None):
-        """Check sensor status command"""
+        """Check sensor status command with multiple retry attempts"""
         log("Sending sensor status check command to node...")
-        success, response = self.tcp_server.send_to_node(CMD_CHECK_SENSORS)
-        if success:
-            log("Sensor status check command sent to node.")
-            return True
-        else:
-            log(f"Failed to send sensor status check command to node: {response}", LOG_ERROR)
-            return False
+        
+        # Add retry logic with watchdog feeding
+        for attempt in range(3):  # 3 attempts
+            feed_watchdog()  # Feed watchdog during long operation
+            success, response = self.tcp_server.send_to_node(CMD_CHECK_SENSORS)
+            if success:
+                log("Sensor status check command sent to node.")
+                return True
+            elif attempt < 2:  # Don't wait after last attempt
+                log(f"Attempt {attempt+1} failed, retrying...", LOG_WARNING)
+                time.sleep_ms(1000)  # Wait before retry
+        
+        log(f"Failed to send sensor status check command after all attempts", LOG_ERROR)
+        return False
 
     def reinitialize_sensors(self, params=None):
-        """Reinitialize sensors command"""
+        """Reinitialize sensors command with retries and watchdog feeding"""
         log("Sending sensor reinitialization command to node...")
-        success, response = self.tcp_server.send_to_node(CMD_REINIT_SENSORS)
-        if success:
-            log("Sensor reinitialization command sent to node.")
-            return True
-        else:
-            log(f"Failed to send sensor reinitialization command to node: {response}", LOG_ERROR)
-            return False
+        
+        # Add retry logic with watchdog feeding
+        for attempt in range(3):  # 3 attempts with watchdog feeding
+            feed_watchdog()  # Feed watchdog during long operation
+            success, response = self.tcp_server.send_to_node(CMD_REINIT_SENSORS)
+            if success:
+                log("Sensor reinitialization command sent to node.")
+                return True
+            elif attempt < 2:  # Don't wait after last attempt
+                log(f"Attempt {attempt+1} failed, retrying...", LOG_WARNING)
+                time.sleep_ms(2000)  # Longer wait for initialization
+        
+        log(f"Failed to send sensor reinitialization command after all attempts", LOG_ERROR)
+        return False
 
     def quit_receiver(self, params=None):
         """Clean exit command"""
@@ -824,14 +866,15 @@ class CommandHandler:
         return True
 
     def set_debug_mode(self, params=None):
-        """Set debug mode command"""
+        """Set debug mode command with thread safety"""
         global current_log_level
         
         try:
             if params:
                 level = int(params)
                 if 0 <= level <= 3:
-                    current_log_level = level
+                    with log_level_lock:
+                        current_log_level = level
                     modes = ["DEBUG", "INFO", "WARNING", "ERROR"]
                     log(f"Log level set to {modes[level]}")
                     
@@ -842,8 +885,10 @@ class CommandHandler:
                     log(f"Invalid log level: {level}. Must be 0-3.", LOG_ERROR)
                     return False
             else:
+                with log_level_lock:
+                    level = current_log_level
                 log("Current log level: {}".format(
-                    ["DEBUG", "INFO", "WARNING", "ERROR"][current_log_level]))
+                    ["DEBUG", "INFO", "WARNING", "ERROR"][level]))
                 return True
         except Exception as e:
             log(f"Error setting debug mode: {e}", LOG_ERROR)
@@ -862,10 +907,15 @@ class CommandHandler:
 
     def process_command(self, cmd):
         """
-        Process commands with command pattern implementation
+        Process commands with command pattern implementation and validation
         Args:
             cmd: Command string (can be structured with params using colon separator)
         """
+        # Validate command length
+        if not cmd or len(cmd) > 100:  # Reasonable command length limit
+            log(f"Invalid command length: {len(cmd) if cmd else 0}", LOG_WARNING)
+            return
+            
         log(f"Processing command: {cmd}")
         
         try:
@@ -878,6 +928,9 @@ class CommandHandler:
             handler = self.commands.get(cmd_code)
             
             if handler:
+                # Feed watchdog before potentially long command
+                feed_watchdog()
+                
                 # Execute the command handler
                 success = handler(params)
                 if success:
@@ -892,10 +945,11 @@ class CommandHandler:
             # Don't reraise - keep running even after errors
 
     def run(self):
-        """Read commands from CDC USB (STDIN) more reliably with watchdog feeding"""
+        """Read commands from CDC USB (STDIN) more reliably with watchdog feeding and buffer size limits"""
         # Flush any existing input to prevent residual data
         self.flush_input()
         buffer = ""
+        MAX_BUFFER_SIZE = 256  # Prevent buffer overflow attacks
         
         while self.running and not check_emergency_stop():
             try:
@@ -913,7 +967,12 @@ class CommandHandler:
                                 buffer = ""
                                 self.process_command(cmd)
                         else:
-                            buffer += char
+                            # Prevent buffer overflow
+                            if len(buffer) < MAX_BUFFER_SIZE:
+                                buffer += char
+                            else:
+                                log("Command buffer overflow - resetting", LOG_WARNING)
+                                buffer = ""
             except Exception as e:
                 log(f"Error in command handler: {e}", LOG_ERROR)
             
@@ -947,7 +1006,7 @@ def start_command_handler(tcp_server, network_manager):
     return cmd_handler
 
 def system_status_thread(tcp_server, network_manager, cmd_handler):
-    """Periodically check and report system status using a timer approach"""
+    """Periodically check and report system status using a timer approach with memory monitoring"""
     start_time = time.ticks_ms()
     
     try:
@@ -960,6 +1019,13 @@ def system_status_thread(tcp_server, network_manager, cmd_handler):
             try:
                 # Feed watchdog
                 feed_watchdog()
+                
+                # Check memory and force GC if needed
+                free_mem = gc.mem_free()
+                if free_mem < 20000:  # 20KB threshold
+                    log(f"Low memory: {free_mem} bytes free, running garbage collection", LOG_WARNING)
+                    gc.collect()
+                    free_mem = gc.mem_free()  # Get updated value
                 
                 # Calculate uptime
                 uptime_ms = time.ticks_diff(time.ticks_ms(), start_time)
@@ -981,9 +1047,6 @@ def system_status_thread(tcp_server, network_manager, cmd_handler):
                 if tcp_server.last_heartbeat > 0:
                     age_sec = time.ticks_diff(time.ticks_ms(), tcp_server.last_heartbeat) // 1000
                     heartbeat_age = f"{age_sec}s ago"
-                
-                # Check memory
-                free_mem = gc.mem_free()
                 
                 # Log the status
                 log(f"STATUS: Uptime: {int(uptime_hr)}h {int(uptime_min%60)}m {int(uptime_sec%60)}s | "
@@ -1123,39 +1186,55 @@ def cleanup_resources(tcp_server, network_manager, cmd_handler):
 
 def safe_mode():
     """
-    Enter safe mode with minimal functionality for diagnostics
+    Enter safe mode with minimal functionality for diagnostics with state preservation
     """
-    global current_log_level
+    global current_log_level, emergency_stop
+    
+    # Preserve emergency stop state
+    with emergency_lock:
+        was_emergency = emergency_stop
+    
+    # Save current log level
+    with log_level_lock:
+        old_log_level = current_log_level
+        # Set to most verbose for diagnostics
+        current_log_level = LOG_DEBUG
     
     log("ENTERING SAFE MODE - Limited functionality available", LOG_ERROR)
-    current_log_level = LOG_DEBUG  # Set to most verbose for diagnostics
-    
-    # Basic hardware check
-    try:
-        ap = network.WLAN(network.AP_IF)
-        ap.active(True)
-        log(f"AP active: {ap.active()}", LOG_INFO)
-    except Exception as e:
-        log(f"AP activation failed: {e}", LOG_ERROR)
-    
-    # Memory status
-    try:
-        log(f"Memory - Free: {gc.mem_free()}, Allocated: {gc.mem_alloc()}", LOG_INFO)
-    except Exception as e:
-        log(f"Memory check failed: {e}", LOG_ERROR)
-    
-    # Keep the system alive but in a minimal state
-    log("Safe mode active. Press Ctrl+C for REPL or reset device.", LOG_INFO)
     
     try:
-        while True:
-            feed_watchdog()
-            time.sleep_ms(1000)
-    except KeyboardInterrupt:
-        log("Keyboard interrupt detected, entering REPL", LOG_INFO)
-    except Exception as e:
-        log(f"Safe mode error: {e}", LOG_ERROR)
-        machine.reset()  # Last resort
+        # Basic hardware check
+        try:
+            ap = network.WLAN(network.AP_IF)
+            ap.active(True)
+            log(f"AP active: {ap.active()}", LOG_INFO)
+        except Exception as e:
+            log(f"AP activation failed: {e}", LOG_ERROR)
+        
+        # Memory status
+        try:
+            log(f"Memory - Free: {gc.mem_free()}, Allocated: {gc.mem_alloc()}", LOG_INFO)
+        except Exception as e:
+            log(f"Memory check failed: {e}", LOG_ERROR)
+        
+        # Keep the system alive but in a minimal state
+        log("Safe mode active. Press Ctrl+C for REPL or reset device.", LOG_INFO)
+        
+        try:
+            while True:
+                feed_watchdog()
+                time.sleep_ms(1000)
+        except KeyboardInterrupt:
+            log("Keyboard interrupt detected, entering REPL", LOG_INFO)
+        except Exception as e:
+            log(f"Safe mode error: {e}", LOG_ERROR)
+            machine.reset()  # Last resort
+    finally:
+        # Restore state if returning from safe mode
+        with emergency_lock:
+            emergency_stop = was_emergency
+        with log_level_lock:
+            current_log_level = old_log_level
 
 def main():
     """Main function with improved error handling and recovery"""
@@ -1251,6 +1330,12 @@ def main():
                         if not exit_requested and not check_emergency_stop():
                             log("WiFi AP has stopped. Restarting...", LOG_WARNING)
                             break
+                    
+                    # Memory monitoring in main thread
+                    free_mem = gc.mem_free()
+                    if free_mem < 10000:  # Critical memory threshold in main thread
+                        log(f"CRITICAL LOW MEMORY: {free_mem} bytes - forcing GC", LOG_ERROR)
+                        gc.collect()
                     
                     # Run garbage collection occasionally
                     if time.ticks_ms() % 60000 < 1000:  # roughly once per minute
