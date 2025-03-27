@@ -866,29 +866,42 @@ class CommandHandler:
         return True
 
     def set_debug_mode(self, params=None):
-        """Set debug mode command with thread safety"""
+        """Set debug mode command with node synchronization"""
         global current_log_level
-        
+
         try:
             if params:
-                level = int(params)
+                # Strip any whitespace and check if valid integer
+                param_clean = params.strip()
+                if not param_clean.isdigit():
+                    log(f"Invalid log level '{params}': must be integer 0-3", LOG_ERROR)
+                    return False
+                level = int(param_clean)
                 if 0 <= level <= 3:
+                    # Set receiver's log level
                     with log_level_lock:
                         current_log_level = level
                     modes = ["DEBUG", "INFO", "WARNING", "ERROR"]
-                    log(f"Log level set to {modes[level]}")
+                    log_msg = f"Receiver log level set to {modes[level]}"
+
+                    # Send command to node and wait for response
+                    success, node_response = self.tcp_server.send_to_node(f"D:{level}", wait_for_response=True)
                     
-                    # Also send to node
-                    self.tcp_server.send_to_node(f"D:{level}", wait_for_response=False)
+                    if success:
+                        log_msg += f" | Node: {node_response}"
+                    else:
+                        log_msg += f" | Node failed: {node_response}"
+                    
+                    log(log_msg)
                     return True
                 else:
                     log(f"Invalid log level: {level}. Must be 0-3.", LOG_ERROR)
                     return False
             else:
+                # Return current log level
                 with log_level_lock:
                     level = current_log_level
-                log("Current log level: {}".format(
-                    ["DEBUG", "INFO", "WARNING", "ERROR"][level]))
+                log(f"Current receiver log level: {['DEBUG', 'INFO', 'WARNING', 'ERROR'][level]}")
                 return True
         except Exception as e:
             log(f"Error setting debug mode: {e}", LOG_ERROR)
