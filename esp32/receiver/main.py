@@ -893,6 +893,8 @@ class CommandHandler:
 
     def run(self):
         """Read commands from CDC USB (STDIN) more reliably with watchdog feeding"""
+        # Flush any existing input to prevent residual data
+        self.flush_input()
         buffer = ""
         
         while self.running and not check_emergency_stop():
@@ -917,6 +919,20 @@ class CommandHandler:
             
             # Short sleep to prevent CPU hogging
             time.sleep_ms(10)
+    
+    def flush_input(self):
+        """Flush any pending input from stdin"""
+        try:
+            while True:
+                # Check if there's data to read without blocking
+                r, _, _ = select.select([sys.stdin], [], [], 0)
+                if sys.stdin in r:
+                    # Read and discard the data
+                    sys.stdin.read(1)
+                else:
+                    break
+        except Exception as e:
+            log(f"Error flushing input: {e}", LOG_DEBUG)
 
 def start_tcp_server(network_manager):
     """Start TCP server in a thread"""

@@ -316,7 +316,7 @@
 
 <div bind:this={container} class="relative h-full w-full">
 	{#if !connected}
-		<div class="bg-opacity-80 absolute inset-0 z-10 flex items-center justify-center bg-gray-100">
+		<div class="absolute inset-0 z-10 flex items-center justify-center bg-gray-100 bg-opacity-80">
 			<div class="rounded bg-white p-4 text-center shadow-md">
 				<h3 class="mb-2 text-lg font-medium text-gray-800">Visualization Inactive</h3>
 				<p class="text-gray-600">
