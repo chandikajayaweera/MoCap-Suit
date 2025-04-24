@@ -14,8 +14,11 @@
 	let sensorData = {};
 
 	// Settings
-	let serialPort = ''; // Empty default value
-	let showConfiguration = true; // Show by default
+	let serialPort = '';
+	let originalPort = '';
+	let portChangeDetected = false;
+	let reconnecting = false;
+	let showConfiguration = true;
 	let availablePorts = [];
 	let loadingPorts = false;
 
@@ -28,13 +31,19 @@
 		}
 
 		connecting = true;
+		originalPort = serialPort;
+		portChangeDetected = false;
 
 		fetch('/api/connect', {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json'
 			},
-			body: JSON.stringify({ port: serialPort })
+			body: JSON.stringify({
+				port: serialPort,
+				baudRate: 115200,
+				dtrControl: false
+			})
 		})
 			.then((response) => response.json())
 			.then((data) => {
@@ -64,6 +73,7 @@
 			.then((response) => response.json())
 			.then((data) => {
 				connected = false;
+				portChangeDetected = false;
 			})
 			.catch((error) => {
 				alert('Disconnect error: ' + error);
@@ -71,12 +81,10 @@
 	}
 
 	function initWebSocket() {
-		// Close existing connection if any
 		if (socket) {
 			socket.close();
 		}
 
-		// Create WebSocket connection
 		const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 		const wsUrl = `${protocol}//${window.location.host}/api/ws`;
 
@@ -85,7 +93,6 @@
 
 		socket.onopen = () => {
 			console.log('WebSocket connected');
-			// Add a log entry
 			logs = [
 				...logs,
 				{ timestamp: new Date(), message: '[CLIENT] WebSocket connection established' }
@@ -93,13 +100,14 @@
 		};
 
 		socket.onmessage = (event) => {
-			console.log('WebSocket message received:', event.data);
 			try {
 				const data = JSON.parse(event.data);
 
 				if (data.type === 'log') {
+					if (data.message.includes('reconnected to new port')) {
+						handlePortChange(data.message);
+					}
 					logs = [...logs, { timestamp: new Date(), message: data.message }];
-					// Keep only the last 1000 logs
 					if (logs.length > 1000) {
 						logs = logs.slice(-1000);
 					}
@@ -122,7 +130,6 @@
 					}
 				];
 
-				// Attempt to reconnect after a delay if it wasn't intentional
 				if (connected) {
 					setTimeout(() => {
 						logs = [
@@ -141,6 +148,29 @@
 		};
 	}
 
+	function handlePortChange(message) {
+		const match = message.match(/new port ([^ ]+)/);
+		if (match && match[1]) {
+			const newPort = match[1];
+
+			if (serialPort !== newPort) {
+				portChangeDetected = true;
+				logs = [
+					...logs,
+					{
+						timestamp: new Date(),
+						message: `[NOTICE] Device has reconnected on port ${newPort} (was ${serialPort}). Port selection has been updated.`
+					}
+				];
+
+				serialPort = newPort;
+				setTimeout(() => {
+					loadAvailablePorts();
+				}, 1000);
+			}
+		}
+	}
+
 	function sendCommand(command) {
 		if (!connected || !socket) {
 			console.error('Cannot send command: not connected');
@@ -157,7 +187,6 @@
 				})
 			);
 
-			// Add to logs for immediate feedback
 			logs = [...logs, { timestamp: new Date(), message: `[CLIENT] Sent command: ${command}` }];
 		} catch (error) {
 			console.error('Error sending command:', error);
@@ -179,8 +208,13 @@
 			.then((data) => {
 				if (data.success && data.ports) {
 					availablePorts = data.ports;
-					// Auto-select the first port if available
-					if (availablePorts.length > 0 && !serialPort) {
+
+					if (portChangeDetected && serialPort) {
+						const newPortInList = availablePorts.some((p) => p.path === serialPort);
+						if (!newPortInList && availablePorts.length > 0) {
+							serialPort = availablePorts[0].path;
+						}
+					} else if (!serialPort && availablePorts.length > 0) {
 						serialPort = availablePorts[0].path;
 					}
 				} else {
@@ -196,7 +230,6 @@
 	}
 
 	onMount(() => {
-		// Load available ports on mount
 		loadAvailablePorts();
 	});
 
@@ -208,7 +241,6 @@
 </script>
 
 <div class="flex h-screen flex-col bg-gray-100">
-	<!-- Header -->
 	<header class="bg-blue-600 p-4 text-white shadow-md">
 		<div class="flex items-center justify-between">
 			<h1 class="text-2xl font-bold">Motion Capture Control Panel</h1>
@@ -251,7 +283,6 @@
 		</div>
 	</header>
 
-	<!-- Configuration Panel (conditionally shown) -->
 	{#if showConfiguration}
 		<div class="border-b border-gray-300 bg-gray-200 p-4">
 			<h2 class="mb-2 font-semibold">Configuration</h2>
@@ -291,19 +322,48 @@
 		</div>
 	{/if}
 
-	<!-- Main Content -->
+	{#if portChangeDetected}
+		<div
+			class="fixed bottom-4 right-4 z-20 max-w-md rounded-lg border-l-4 border-yellow-500 bg-yellow-50 p-4 shadow-lg"
+		>
+			<div class="flex items-start">
+				<div class="flex-shrink-0">
+					<svg class="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+						<path
+							fill-rule="evenodd"
+							d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+							clip-rule="evenodd"
+						/>
+					</svg>
+				</div>
+				<div class="ml-3">
+					<h3 class="text-sm font-medium text-yellow-800">Port Change Detected</h3>
+					<div class="mt-2 text-sm text-yellow-700">
+						<p>Device reconnected on port {serialPort}.</p>
+						<p class="mt-1">Connection has been automatically maintained.</p>
+					</div>
+					<div class="mt-3">
+						<button
+							on:click={() => (portChangeDetected = false)}
+							class="text-sm font-medium text-yellow-800 hover:text-yellow-500"
+						>
+							Dismiss
+						</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	{/if}
+
 	<div class="flex flex-1 overflow-hidden">
-		<!-- Left Panel - Commands and Controls -->
 		<div class="w-1/4 overflow-y-auto bg-white p-4 shadow-md">
 			<CommandPanel {connected} onSendCommand={sendCommand} />
 		</div>
 
-		<!-- Center Panel - Visualization -->
 		<div class="w-1/2 overflow-hidden bg-white p-4 shadow-md">
 			<SensorVisualization data={sensorData} {connected} />
 		</div>
 
-		<!-- Right Panel - Logs -->
 		<div class="flex w-1/4 flex-col overflow-hidden bg-white p-4 shadow-md">
 			<div class="mb-2 flex items-center justify-between">
 				<h2 class="font-semibold">System Logs</h2>
@@ -318,7 +378,6 @@
 		</div>
 	</div>
 
-	<!-- Footer -->
 	<footer class="bg-gray-200 p-2 text-center text-sm text-gray-600">
 		Motion Capture Control Panel &copy; 2025
 	</footer>

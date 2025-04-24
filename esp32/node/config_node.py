@@ -16,4 +16,4 @@ SCL_PIN = 6
 MUX_ADDR = 0x70
 
 # Hardware timing
-MUX_SWITCH_DELAY_MS = 5
+MUX_SWITCH_DELAY_MS = 1

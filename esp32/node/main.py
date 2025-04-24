@@ -516,8 +516,7 @@ def sensor_reading_thread():
         # Add a sequence number to detect packet loss
         seq_num = 0
         
-        # Log that we're starting
-        log("Starting sensor data streaming at 50+ Hz")
+        log("Starting sensor data streaming")
         
         with reading_lock:
             reading_enabled = True
