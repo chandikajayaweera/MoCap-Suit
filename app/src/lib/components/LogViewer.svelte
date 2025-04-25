@@ -50,10 +50,13 @@
 				type="text"
 				bind:value={filterText}
 				placeholder="Filter logs..."
-				class="flex-grow rounded border px-2 py-1 text-sm"
+				class="flex-grow rounded border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
 			/>
 
-			<select bind:value={filterLevel} class="rounded border px-2 py-1 text-sm">
+			<select
+				bind:value={filterLevel}
+				class="rounded border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+			>
 				<option value="all">All Levels</option>
 				<option value="error">Errors</option>
 				<option value="warning">Warnings</option>
@@ -63,7 +66,11 @@
 
 		<div class="flex items-center">
 			<label class="flex items-center text-sm text-gray-700">
-				<input type="checkbox" bind:checked={autoscroll} class="mr-1" />
+				<input
+					type="checkbox"
+					bind:checked={autoscroll}
+					class="mr-1 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+				/>
 				Auto-scroll
 			</label>
 		</div>
@@ -72,10 +79,10 @@
 	<!-- Log display -->
 	<div
 		bind:this={logContainer}
-		class="flex-grow overflow-y-auto rounded bg-gray-50 p-2 font-mono text-xs"
+		class="mb-4 flex-grow overflow-y-auto rounded bg-gray-50 p-2 font-mono text-xs shadow-inner"
 	>
 		{#if filteredLogs.length === 0}
-			<div class="text-gray-500 italic">No logs to display.</div>
+			<div class="italic text-gray-500">No logs to display.</div>
 		{:else}
 			{#each filteredLogs as log}
 				<div class="mb-1 leading-tight">

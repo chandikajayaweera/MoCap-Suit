@@ -63,24 +63,24 @@
 </script>
 
 <div class="flex h-full flex-col">
-	<h2 class="mb-4 text-lg font-semibold">Commands</h2>
+	<h2 class="mb-4 text-lg font-semibold text-gray-800">Commands</h2>
 
 	{#if !connected}
-		<div class="mb-4 rounded-md bg-yellow-100 p-3 text-yellow-800">
+		<div class="mb-4 rounded-md bg-yellow-50 p-3 text-yellow-800 shadow-sm">
 			Please connect to the system first to send commands.
 		</div>
 	{/if}
 
 	<!-- Commands grouped by category -->
 	{#each Object.entries(commandsByCategory) as [category, categoryCommands]}
-		<div class="mb-6">
-			<h3 class="mb-2 font-medium text-gray-700 capitalize">{category} Controls</h3>
+		<div class="mb-5">
+			<h3 class="mb-2 font-medium capitalize text-gray-700">{category} Controls</h3>
 			<div class="space-y-2">
 				{#each categoryCommands as command}
 					<button
 						on:click={() => handleCommand(command.id)}
 						disabled={!connected}
-						class="flex w-full items-center justify-between rounded border border-gray-300 px-3 py-2 text-left transition-colors"
+						class="flex w-full items-center justify-between rounded border border-gray-300 bg-white px-3 py-2 text-left shadow-sm transition-colors hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 disabled:opacity-60 disabled:hover:bg-white"
 						class:bg-gray-100={!connected}
 						class:hover:bg-blue-50={connected}
 					>
@@ -88,25 +88,13 @@
 							<span class="font-medium">{command.label}</span>
 							<span class="block text-xs text-gray-500">{command.description}</span>
 						</div>
-						<span class="rounded bg-gray-200 px-2 py-1 text-xs">{command.id}</span>
+						<span
+							class="flex h-6 min-w-6 items-center justify-center rounded bg-gray-200 px-1.5 py-0.5 text-xs font-semibold text-gray-800"
+							>{command.id}</span
+						>
 					</button>
 				{/each}
 			</div>
 		</div>
 	{/each}
-
-	<div class="mt-auto">
-		<div class="rounded border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
-			<p class="mb-1 font-medium">Command Legend:</p>
-			<ul class="space-y-1 text-xs">
-				<li><strong>S</strong> - Start streaming sensor data</li>
-				<li><strong>X</strong> - Stop streaming sensor data</li>
-				<li><strong>C</strong> - Check sensor status</li>
-				<li><strong>I</strong> - Reinitialize sensors</li>
-				<li><strong>N</strong> - Restart node</li>
-				<li><strong>R</strong> - Restart receiver</li>
-				<li><strong>Q</strong> - Quit/shutdown receiver</li>
-			</ul>
-		</div>
-	</div>
 </div>

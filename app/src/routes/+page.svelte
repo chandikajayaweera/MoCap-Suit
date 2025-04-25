@@ -120,6 +120,11 @@
 		};
 
 		socket.onclose = (event) => {
+			if (connected) {
+				setTimeout(() => {
+					initWebSocket(); // Reconnect
+				}, 2000);
+			}
 			console.log('WebSocket disconnected:', event);
 			if (connected) {
 				logs = [
@@ -248,22 +253,22 @@
 			<div class="flex items-center gap-4">
 				<button
 					on:click={() => (showConfiguration = !showConfiguration)}
-					class="rounded bg-blue-700 px-3 py-1 text-white hover:bg-blue-800"
+					class="rounded bg-blue-700 px-3 py-1.5 text-white transition hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-opacity-75"
 				>
-					Settings
+					{showConfiguration ? 'Hide Settings' : 'Show Settings'}
 				</button>
 
 				{#if connected}
 					<button
 						on:click={disconnect}
-						class="rounded bg-red-600 px-3 py-1 text-white hover:bg-red-700"
+						class="rounded bg-red-600 px-3 py-1.5 text-white transition hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-opacity-75"
 					>
 						Disconnect
 					</button>
 				{:else}
 					<button
 						on:click={connect}
-						class="rounded bg-green-600 px-3 py-1 text-white hover:bg-green-700"
+						class="rounded bg-green-600 px-3 py-1.5 text-white transition hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-400 focus:ring-opacity-75 disabled:bg-green-400"
 						disabled={connecting}
 					>
 						{connecting ? 'Connecting...' : 'Connect'}
@@ -271,24 +276,26 @@
 				{/if}
 
 				<div class="flex items-center">
-					<span class="mr-2">Status:</span>
-					<span
-						class="mr-1 inline-block h-3 w-3 rounded-full"
-						class:bg-green-500={connected}
-						class:bg-red-500={!connected}
-					></span>
-					<span>{connected ? 'Connected' : 'Disconnected'}</span>
+					<span class="mr-2 hidden sm:inline">Status:</span>
+					<div class="flex items-center rounded bg-white/20 px-2 py-1">
+						<span
+							class="mr-1.5 inline-block h-3 w-3 rounded-full"
+							class:bg-green-400={connected}
+							class:bg-red-400={!connected}
+						></span>
+						<span class="text-sm font-medium">{connected ? 'Connected' : 'Disconnected'}</span>
+					</div>
 				</div>
 			</div>
 		</div>
 	</header>
 
 	{#if showConfiguration}
-		<div class="border-b border-gray-300 bg-gray-200 p-4">
-			<h2 class="mb-2 font-semibold">Configuration</h2>
-			<div class="flex items-center gap-4">
+		<div class="border-b border-gray-300 bg-white p-4 shadow-sm">
+			<h2 class="mb-2 font-semibold text-gray-800">Connection Settings</h2>
+			<div class="flex flex-wrap items-center gap-4">
 				<div class="flex items-center">
-					<label for="serialPort" class="mr-2">Serial Port:</label>
+					<label for="serialPort" class="mr-2 whitespace-nowrap">Serial Port:</label>
 					{#if loadingPorts}
 						<div class="text-gray-500">Loading ports...</div>
 					{:else if availablePorts.length === 0}
@@ -297,14 +304,14 @@
 						<select
 							id="serialPort"
 							bind:value={serialPort}
-							class="w-64 rounded border px-2 py-1"
+							class="w-64 rounded border border-gray-300 px-2 py-1 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
 							disabled={connected}
 						>
 							<option value="">-- Select a port --</option>
 							{#each availablePorts as port}
 								<option value={port.path}>
 									{port.path}
-									{port.manufacturer ? `(${port.manufacturer})` : ''}
+									{port.manufacturer ? ` (${port.manufacturer})` : ''}
 								</option>
 							{/each}
 						</select>
@@ -313,7 +320,7 @@
 
 				<button
 					on:click={loadAvailablePorts}
-					class="rounded bg-gray-300 px-2 py-1 text-sm hover:bg-gray-400"
+					class="rounded border border-gray-300 bg-white px-3 py-1 text-sm transition hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 disabled:opacity-50"
 					disabled={connected || loadingPorts}
 				>
 					{loadingPorts ? 'Loading...' : 'Refresh Ports'}
@@ -361,15 +368,20 @@
 		</div>
 
 		<div class="w-1/2 overflow-hidden bg-white p-4 shadow-md">
-			<SensorVisualization data={sensorData} {connected} />
+			<div class="flex h-full flex-col">
+				<h2 class="mb-2 font-semibold text-gray-800">Visualization</h2>
+				<div class="flex-1">
+					<SensorVisualization data={sensorData} {connected} />
+				</div>
+			</div>
 		</div>
 
 		<div class="flex w-1/4 flex-col overflow-hidden bg-white p-4 shadow-md">
 			<div class="mb-2 flex items-center justify-between">
-				<h2 class="font-semibold">System Logs</h2>
+				<h2 class="font-semibold text-gray-800">System Logs</h2>
 				<button
 					on:click={clearLogs}
-					class="rounded bg-gray-200 px-2 py-1 text-sm hover:bg-gray-300"
+					class="rounded bg-gray-200 px-2 py-1 text-sm text-gray-700 transition hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-opacity-50"
 				>
 					Clear
 				</button>
@@ -378,7 +390,7 @@
 		</div>
 	</div>
 
-	<footer class="bg-gray-200 p-2 text-center text-sm text-gray-600">
+	<footer class="bg-white p-2 text-center text-sm text-gray-600 shadow-inner">
 		Motion Capture Control Panel &copy; 2025
 	</footer>
 </div>
