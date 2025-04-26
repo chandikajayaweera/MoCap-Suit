@@ -27,21 +27,25 @@ export async function connectToSerialPort(options) {
 			await disconnectFromSerialPort();
 		}
 
-		console.log(`Connecting to ${options.port} at ${global.lastBaudRate} baud`);
+		console.log(
+			`Connecting to ${options.port} at ${global.lastBaudRate} baud with real-time optimization`
+		);
 
-		// Create the SerialPort instance with options that prevent reset
+		// Create the SerialPort instance with optimized settings for real-time data
 		global.serialPort = new SerialPort({
 			path: options.port,
 			baudRate: global.lastBaudRate,
 			autoOpen: false,
-			// Disable flow control options that might cause issues
-			rtscts: false,
-			xon: false,
-			xoff: false
+			// Critical for real-time: Disable all buffering and flow control
+			rtscts: false, // No hardware flow control
+			xon: false, // No software flow control
+			xoff: false, // No software flow control
+			hupcl: false, // Don't drop DTR on close
+			highWaterMark: 64 // Small buffer size for minimal latency
 		});
 
 		return new Promise((resolve, reject) => {
-			// Open the port first, then we'll set DTR/RTS after it's open
+			// Open the port first, then set additional options
 			global.serialPort.open((error) => {
 				if (error) {
 					console.error('Error opening serial port:', error);
@@ -52,30 +56,40 @@ export async function connectToSerialPort(options) {
 				console.log('Serial port opened successfully');
 
 				// After opening, explicitly set DTR/RTS to prevent device reset
-				// The port is now guaranteed to be open
-				if (options.dtrControl === false) {
-					// Set a slight delay before setting DTR/RTS to ensure port is fully ready
-					setTimeout(() => {
-						try {
-							if (global.serialPort && global.serialPort.isOpen) {
-								global.serialPort.set({ dtr: false, rts: false });
-								console.log('DTR/RTS signals set to prevent device reset');
-							}
-						} catch (err) {
-							console.warn('Could not set DTR/RTS signals after open:', err);
+				setTimeout(() => {
+					try {
+						if (global.serialPort && global.serialPort.isOpen) {
+							global.serialPort.set({
+								dtr: false, // Disable DTR to prevent reset
+								rts: false, // Disable RTS
+								brk: false // No break condition
+							});
+							console.log('Serial port configured for real-time streaming');
 						}
-					}, 100);
-				}
+					} catch (err) {
+						console.warn('Could not set DTR/RTS signals after open:', err);
+					}
+				}, 100);
 
-				// Create parser for text data
-				global.parser = global.serialPort.pipe(new ReadlineParser({ delimiter: '\n' }));
+				// Create parser for text data with smaller chunk size
+				global.parser = global.serialPort.pipe(
+					new ReadlineParser({
+						delimiter: '\n',
+						encoding: 'utf8',
+						includeDelimiter: false
+					})
+				);
 
-				// Handle data received from serial port
+				// For optimal real-time performance, process data immediately
 				global.parser.on('data', (data) => {
-					console.log(
-						`Received data from serial port: ${data.substring(0, 50)}${data.length > 50 ? '...' : ''}`
-					);
-					handleSerialData(data);
+					// Skip verbose logging for sensor data to improve performance
+					if (data.startsWith('DATA:') || data.startsWith('QUAT_DATA:')) {
+						// Process sensor data without delays
+						process.nextTick(() => handleSerialData(data));
+					} else {
+						// Handle logs and other messages normally
+						handleSerialData(data);
+					}
 				});
 
 				// Handle errors
@@ -87,23 +101,13 @@ export async function connectToSerialPort(options) {
 					});
 				});
 
-				// Handle close events
-				global.serialPort.on('close', () => {
-					console.log('Serial port was closed');
-					broadcast({
-						type: 'log',
-						message: '[INFO] Serial port connection closed'
-					});
-				});
-
 				// Send connected notification
 				broadcast({
 					type: 'log',
-					message: `[INFO] Connected to ${options.port} at ${global.lastBaudRate} baud`
+					message: `[INFO] Connected to ${options.port} at ${global.lastBaudRate} baud with real-time optimization`
 				});
 
 				// Start port monitoring for automatic reconnection
-				// with a small delay to ensure port is fully initialized
 				setTimeout(() => {
 					if (global.serialPort && global.serialPort.isOpen) {
 						startPortMonitoring();
@@ -327,9 +331,10 @@ function broadcast(data) {
  */
 function handleSerialData(data) {
 	try {
-		if (data.startsWith('DATA:')) {
-			// Process sensor data
-			handleSensorData(data.substring(5));
+		// Skip verbose logging for data packets to reduce CPU usage
+		if (data.startsWith('DATA:') || data.startsWith('QUAT_DATA:')) {
+			// Process sensor data directly
+			handleSensorData(data);
 		} else if (data.startsWith('LOG:')) {
 			// Process log message
 			broadcast({
@@ -354,20 +359,46 @@ function handleSerialData(data) {
  */
 function handleSensorData(data) {
 	try {
-		// Check if it starts with QUAT_DATA prefix
-		if (data.startsWith('QUAT_DATA:')) {
-			const sensorData = parseSensorData(data.substring(10));
+		// Extract and clean the data portion
+		let cleanData = '';
+		if (data.startsWith('DATA:QUAT_DATA:')) {
+			cleanData = data.substring('DATA:QUAT_DATA:'.length).trim();
+		} else if (data.startsWith('QUAT_DATA:')) {
+			cleanData = data.substring('QUAT_DATA:'.length).trim();
+		} else if (data.startsWith('DATA:')) {
+			// Try to find QUAT_DATA in the remaining string
+			const qIndex = data.indexOf('QUAT_DATA:', 5);
+			if (qIndex !== -1) {
+				cleanData = data.substring(qIndex + 'QUAT_DATA:'.length).trim();
+			} else {
+				return; // Not a sensor data packet
+			}
+		}
 
+		if (!cleanData) return;
+
+		// Parse the data with the optimized non-regex method
+		const sensorData = parseSensorData(cleanData);
+
+		// Only broadcast if we have valid data (performance optimization)
+		const sensorCount = Object.keys(sensorData).filter((k) => k.startsWith('S')).length;
+
+		if (sensorCount > 0 || sensorData.sequence !== undefined) {
+			// Create a timestamp when we process the data (not when we send it)
+			const timestamp = Date.now();
+
+			// Immediate broadcast without additional processing
 			broadcast({
 				type: 'sensorData',
 				data: {
-					timestamp: Date.now(),
+					timestamp: timestamp,
 					sensorData: sensorData
 				}
 			});
 		}
 	} catch (error) {
-		console.error('Error handling sensor data:', error);
+		// Only log errors in sensor processing, don't disrupt the data flow
+		console.error('Error processing sensor data:', error);
 	}
 }
 
@@ -379,27 +410,83 @@ function handleSensorData(data) {
 function parseSensorData(data) {
 	const result = {};
 
-	// Expected format: SEQ:{seq},S0:[w,x,y,z],S1:[w,x,y,z],...
-	const parts = data.split(',');
-
-	// Extract sequence number
-	if (parts[0].startsWith('SEQ:')) {
-		result.sequence = parseInt(parts[0].substring(4), 10);
-	}
-
-	// Extract sensor data
-	for (let i = 1; i < parts.length; i++) {
-		const part = parts[i];
-		const sensorMatch = part.match(/S(\d+):\[([^\]]+)\]/);
-
-		if (sensorMatch) {
-			const sensorIndex = sensorMatch[1];
-			const values = sensorMatch[2].split(',').map(Number);
-
-			if (values.length === 4) {
-				result[`S${sensorIndex}`] = values;
+	try {
+		// Extract sequence number
+		if (data.includes('SEQ:')) {
+			const seqPart = data.substring(data.indexOf('SEQ:') + 4);
+			const seqEnd = seqPart.indexOf(',');
+			if (seqEnd > 0) {
+				result.sequence = parseInt(seqPart.substring(0, seqEnd), 10);
 			}
 		}
+
+		// Extract sensor data efficiently
+		let currentPos = 0;
+		while ((currentPos = data.indexOf('S', currentPos)) !== -1) {
+			// Fast check for sensor pattern
+			if (currentPos + 1 >= data.length || !isDigit(data[currentPos + 1])) {
+				currentPos++;
+				continue;
+			}
+
+			// Find sensor format S0:[w,x,y,z]
+			const sensorIdEnd = data.indexOf(':', currentPos);
+			if (sensorIdEnd === -1) break;
+
+			const sensorId = data.substring(currentPos + 1, sensorIdEnd);
+
+			const valuesStart = data.indexOf('[', sensorIdEnd);
+			if (valuesStart === -1) break;
+
+			const valuesEnd = data.indexOf(']', valuesStart);
+			if (valuesEnd === -1) break;
+
+			const valuesStr = data.substring(valuesStart + 1, valuesEnd);
+			const values = fastSplit(valuesStr).map(parseFloat);
+
+			if (values.length === 4) {
+				result[`S${sensorId}`] = values;
+			}
+
+			currentPos = valuesEnd + 1;
+		}
+	} catch (err) {
+		// Silent error handling to keep performance high
+	}
+
+	return result;
+}
+
+/**
+ * Fast check if character is a digit - more efficient than regex
+ * @param {string} char - Single character to check
+ * @returns {boolean} - True if digit
+ */
+function isDigit(char) {
+	return char >= '0' && char <= '9';
+}
+
+/**
+ * Optimized string split for comma-separated values
+ * @param {string} str - String to split
+ * @returns {Array} - Array of values
+ */
+function fastSplit(str) {
+	const result = [];
+	let start = 0;
+	let pos = 0;
+
+	while (pos < str.length) {
+		if (str[pos] === ',') {
+			result.push(str.substring(start, pos));
+			start = pos + 1;
+		}
+		pos++;
+	}
+
+	// Add the last part
+	if (start < str.length) {
+		result.push(str.substring(start));
 	}
 
 	return result;

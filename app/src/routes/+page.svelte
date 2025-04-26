@@ -26,66 +26,207 @@
 	let logs = $state([]);
 	let sensorData = $state({});
 
+	// Initialize tracking variables at component level
+	let packetTimestamps = []; // Array to store recent packet timestamps
+	let lastRate = 0; // Last calculated rate for change detection
+	let rateHistory = []; // Historical rates for trend analysis
+	const MAX_HISTORY = 30; // Number of rate values to keep for trending
+
+	// Last sequence number for checking continuity
+	let lastSequence = -1;
+	let outOfOrderCount = 0;
+	let missedPackets = 0;
+
 	// Clear logs handler
 	function clearLogs() {
 		logs = [];
 	}
 
-	// Increment packet counter
-	function trackDataReception() {
-		console.log(`Tracking data reception, current count: ${dataPacketsReceived}`);
-		dataPacketsReceived += 1;
+	/**
+	 * Enhanced function to track data reception with detailed metrics
+	 * @param {Object} data - Optional data packet for inspection
+	 */
+	function trackDataReception(data = null) {
+		const now = performance.now();
+
+		// Store timestamp for rate calculation
+		packetTimestamps.push(now);
+
+		// Keep only recent packets in the window (5 second window)
+		const windowSize = 5000; // 5 seconds
+		while (packetTimestamps.length > 0 && now - packetTimestamps[0] > windowSize) {
+			packetTimestamps.shift();
+		}
+
+		// Calculate current rate (packets per second)
+		const currentRate = packetTimestamps.length / (windowSize / 1000);
+
+		// Store rate for trend analysis
+		rateHistory.push(currentRate);
+		if (rateHistory.length > MAX_HISTORY) {
+			rateHistory.shift();
+		}
+
+		// Calculate trend (increasing, decreasing, steady)
+		let trend = 'steady';
+		if (rateHistory.length > 5) {
+			const recentAvg = rateHistory.slice(-5).reduce((sum, rate) => sum + rate, 0) / 5;
+			const olderAvg = rateHistory.slice(0, 5).reduce((sum, rate) => sum + rate, 0) / 5;
+			const difference = recentAvg - olderAvg;
+
+			if (difference > 2) trend = 'increasing';
+			else if (difference < -2) trend = 'decreasing';
+		}
+
+		// Log significant rate changes or every 50 packets
+		if (Math.abs(currentRate - lastRate) > 5 || dataPacketsReceived % 50 === 0) {
+			console.log(`Data rate: ${currentRate.toFixed(1)} packets/sec (${trend})`);
+			lastRate = currentRate;
+
+			// Only call setDataRate if it exists
+			if (motionStore && typeof motionStore.setDataRate === 'function') {
+				motionStore.setDataRate(currentRate);
+			}
+		}
+
+		// Increment the counter
+		dataPacketsReceived++;
+
+		// Check sequence number if data is provided
+		if (data && data.sequence !== undefined) {
+			checkSequence(data.sequence);
+		}
+
+		// Update timestamp
+		lastDataTimestamp = Date.now();
+
+		// Return metrics for optional use
+		return {
+			rate: currentRate,
+			trend: trend,
+			count: dataPacketsReceived,
+			packetTimestamps: packetTimestamps.length
+		};
+	}
+
+	/**
+	 * Check sequence number continuity
+	 * @param {number} sequence - Current sequence number
+	 */
+	function checkSequence(sequence) {
+		if (lastSequence === -1) {
+			// First packet, just store sequence
+			lastSequence = sequence;
+			return;
+		}
+
+		// Check for expected next sequence
+		const expectedSequence = (lastSequence + 1) % 65536; // Wrap at 16-bit
+
+		if (sequence !== expectedSequence) {
+			// Out of order or missed packets
+			if (sequence > expectedSequence) {
+				// Missed packets
+				const missed = sequence - expectedSequence;
+				if (missed < 1000) {
+					// Sanity check for reasonable values
+					missedPackets += missed;
+					if (missed > 10) {
+						console.warn(`Missing ${missed} packets between ${lastSequence} and ${sequence}`);
+					}
+				}
+			} else {
+				// Out of order packet (earlier than expected)
+				outOfOrderCount++;
+				if (outOfOrderCount % 10 === 1) {
+					// Log occasionally to avoid spam
+					console.warn(`Out-of-order packet: ${sequence} after ${lastSequence}`);
+				}
+			}
+		}
+
+		// Update last sequence
+		lastSequence = sequence;
 	}
 
 	// Function to parse sensor data from raw message
 	function parseDataMessage(message) {
-		if (!message || !message.includes('QUAT_DATA:')) {
-			return null;
-		}
+		if (!message) return null;
 
 		try {
-			// Extract the QUAT_DATA part
+			// Extract the QUAT_DATA part - handle both formats
 			let dataStart = message.indexOf('QUAT_DATA:');
 			if (dataStart === -1) return null;
 
-			// Handle different formats
+			// Handle different formats - add 'QUAT_DATA:' length to get to the data
+			const prefix = 'QUAT_DATA:';
 			if (message.includes('DATA:QUAT_DATA:')) {
 				dataStart = message.indexOf('DATA:QUAT_DATA:') + 5; // Skip 'DATA:' prefix
 			}
 
-			// Extract the clean data portion
-			const cleanMessage = message.substring(dataStart + 'QUAT_DATA:'.length).trim();
+			// Extract the clean data portion and TRIM any leading whitespace
+			const cleanMessage = message.substring(dataStart + prefix.length).trim();
+
+			// Debug output to see what we're parsing
+			console.log(
+				'Parsing data:',
+				cleanMessage.substring(0, Math.min(50, cleanMessage.length)) + '...'
+			);
 
 			const result = {};
 
-			// Parse the parts
-			const parts = cleanMessage.split(',');
-
+			// Parse with simple string manipulation instead of regex
 			// Extract sequence number
-			if (parts[0] && parts[0].startsWith('SEQ:')) {
-				result.sequence = parseInt(parts[0].substring(4), 10);
-			}
-
-			// Extract sensor data
-			for (let i = 1; i < parts.length; i++) {
-				const part = parts[i];
-				// Match "S0:[0.9981,-0.0313,-0.0533,0.0000]" pattern
-				const match = part.match(/S(\d+):\[([\d\.-]+),([\d\.-]+),([\d\.-]+),([\d\.-]+)\]/);
-
-				if (match) {
-					const sensorId = match[1];
-					const values = [
-						parseFloat(match[2]), // w
-						parseFloat(match[3]), // x
-						parseFloat(match[4]), // y
-						parseFloat(match[5]) // z
-					];
-
-					result[`S${sensorId}`] = values;
+			if (cleanMessage.includes('SEQ:')) {
+				const seqPart = cleanMessage.substring(cleanMessage.indexOf('SEQ:') + 4);
+				const seqEnd = seqPart.indexOf(',');
+				if (seqEnd > 0) {
+					result.sequence = parseInt(seqPart.substring(0, seqEnd), 10);
 				}
 			}
 
-			return result;
+			// Extract sensor data with simple string manipulation
+			let currentPos = 0;
+			while ((currentPos = cleanMessage.indexOf('S', currentPos)) !== -1) {
+				// Skip if not a valid sensor format (must be followed by a digit)
+				if (currentPos + 1 >= cleanMessage.length || !/\d/.test(cleanMessage[currentPos + 1])) {
+					currentPos++;
+					continue;
+				}
+
+				// Find format S0:[w,x,y,z]
+				const sensorIdEnd = cleanMessage.indexOf(':', currentPos);
+				if (sensorIdEnd === -1) break;
+
+				const sensorId = cleanMessage.substring(currentPos + 1, sensorIdEnd);
+
+				const valuesStart = cleanMessage.indexOf('[', sensorIdEnd);
+				if (valuesStart === -1) break;
+
+				const valuesEnd = cleanMessage.indexOf(']', valuesStart);
+				if (valuesEnd === -1) break;
+
+				const valuesStr = cleanMessage.substring(valuesStart + 1, valuesEnd);
+				const values = valuesStr.split(',').map((v) => parseFloat(v.trim()));
+
+				if (values.length === 4) {
+					result[`S${sensorId}`] = values;
+				}
+
+				currentPos = valuesEnd + 1;
+			}
+
+			// Debug to see what we extracted
+			const sensorCount = Object.keys(result).filter((k) => k.startsWith('S')).length;
+			console.log(`Extracted ${sensorCount} sensors and sequence ${result.sequence}`);
+
+			// Validate we have actual data before returning
+			if (sensorCount > 0 || result.sequence !== undefined) {
+				return result;
+			} else {
+				console.log('No valid sensor data found in message');
+				return null;
+			}
 		} catch (error) {
 			console.error('Error parsing data message:', error);
 			return null;
@@ -153,6 +294,7 @@
 			});
 	}
 
+	// Function to initialize WebSocket with performance optimizations
 	function initWebSocket() {
 		// Clean up existing socket properly before creating a new one
 		cleanupWebSocket();
@@ -171,6 +313,9 @@
 		try {
 			socket = new WebSocket(wsUrl);
 
+			// Critical for reducing latency: Use arraybuffer for more efficient binary handling
+			socket.binaryType = 'arraybuffer';
+
 			// Set a connection timeout
 			const connectionTimeout = setTimeout(() => {
 				if (socket && socket.readyState !== WebSocket.OPEN) {
@@ -182,114 +327,177 @@
 						setTimeout(initWebSocket, 3000);
 					}
 				}
-			}, 10000); // 10 second timeout
+			}, 10000);
 
 			socket.onopen = () => {
-				console.log('WebSocket connected');
+				console.log('WebSocket connected at', Date.now());
 				clearTimeout(connectionTimeout);
 				addLog('WebSocket connection established');
 				motionStore.setConnected(true);
+
+				// Request no buffering/compression for real-time data
+				try {
+					socket.send(
+						JSON.stringify({
+							type: 'config',
+							settings: {
+								noDelay: true,
+								binaryType: 'arraybuffer'
+							}
+						})
+					);
+				} catch (e) {
+					console.error('Error requesting real-time configuration:', e);
+				}
 			};
+
+			// For real-time visualization, use a separate variable to track times between sensor updates
+			let lastSensorUpdateTime = performance.now();
+			let frameCounter = 0;
+			let sensorUpdateIntervals = [];
+			let reportTime = performance.now();
+
+			// Animation frame management for smooth visualization
+			let animFrameId = null;
+
+			// Process and apply sensor data immediately when received
+			// but render at optimal timing with requestAnimationFrame
+			// Update the socket.onmessage handler to pass the data to trackDataReception
 
 			socket.onmessage = (event) => {
 				try {
 					const data = JSON.parse(event.data);
 
-					if (data.type === 'log') {
+					if (data.type === 'sensorData') {
+						// Track timing between sensor updates
+						const now = performance.now();
+						const timeSinceLastUpdate = now - lastSensorUpdateTime;
+						lastSensorUpdateTime = now;
+
+						// Track update intervals for performance monitoring
+						sensorUpdateIntervals.push(timeSinceLastUpdate);
+						if (sensorUpdateIntervals.length > 100) {
+							sensorUpdateIntervals.shift();
+						}
+
+						// Count frames for FPS calculation
+						frameCounter++;
+
+						// Report stats every second
+						if (now - reportTime > 1000) {
+							// Calculate average, min, max update intervals
+							const avgInterval =
+								sensorUpdateIntervals.reduce((sum, val) => sum + val, 0) /
+								(sensorUpdateIntervals.length || 1);
+							const minInterval = Math.min(...sensorUpdateIntervals);
+							const maxInterval = Math.max(...sensorUpdateIntervals);
+
+							console.log(
+								`Sensor updates: ${frameCounter}fps, Intervals: avg=${avgInterval.toFixed(1)}ms, ` +
+									`min=${minInterval.toFixed(1)}ms, max=${maxInterval.toFixed(1)}ms`
+							);
+
+							// Reset counters
+							frameCounter = 0;
+							reportTime = now;
+						}
+
+						// Extract sensor data - keep variable names consistent
+						let extractedData;
+						if (data.data && data.data.sensorData) {
+							extractedData = data.data.sensorData;
+						} else if (data.data) {
+							extractedData = data.data;
+						} else {
+							extractedData = data;
+						}
+
+						// Update state immediately - important for real-time
+						if (extractedData && typeof extractedData === 'object') {
+							if (!isStreaming) isStreaming = true;
+
+							// Pass the actual sensor data to trackDataReception
+							trackDataReception(extractedData);
+
+							// Update sensor data immediately
+							sensorData = extractedData;
+							lastDataTimestamp = Date.now();
+
+							// Update motion store for the visualization components
+							motionStore.updateSensorData(extractedData);
+
+							// Ensure visualization updates at next animation frame
+							if (!animFrameId) {
+								animFrameId = requestAnimationFrame(() => {
+									// Allow visualization components to update
+									animFrameId = null;
+								});
+							}
+						}
+					} else if (data.type === 'log') {
 						// Handle port change detection
-						if (data.message.includes('reconnected to new port')) {
+						if (data.message && data.message.includes('reconnected to new port')) {
 							handlePortChange(data.message);
 						}
 
 						// Detect streaming status from logs
 						if (
-							data.message.includes('Sensor reading started') ||
-							data.message.includes('UDP server started for sensor data') ||
-							data.message.includes('UDP data streaming started')
+							data.message &&
+							(data.message.includes('Sensor reading started') ||
+								data.message.includes('UDP server started for sensor data') ||
+								data.message.includes('UDP data streaming started'))
 						) {
 							isStreaming = true;
 							lastDataTimestamp = Date.now();
 							addLog('Streaming started successfully', LOG_INFO);
 						} else if (
-							data.message.includes('Sensor reading stopped') ||
-							data.message.includes('UDP server stopped') ||
-							data.message.includes('stopped.') ||
-							data.message.includes('not running') ||
-							data.message.includes('Command sent: X')
+							data.message &&
+							(data.message.includes('Sensor reading stopped') ||
+								data.message.includes('UDP server stopped') ||
+								data.message.includes('stopped.') ||
+								data.message.includes('not running') ||
+								data.message.includes('Command sent: X'))
 						) {
 							isStreaming = false;
 							addLog('Streaming stopped', LOG_INFO);
 						}
 
-						// Check for QUAT_DATA in log messages and parse it
-						if (data.message.includes('QUAT_DATA:')) {
+						// Handle QUAT_DATA in logs
+						if (data.message && data.message.includes('QUAT_DATA:')) {
 							const parsedData = parseDataMessage(data.message);
 							if (parsedData) {
-								trackDataReception();
+								// Pass the parsed data to trackDataReception
+								trackDataReception(parsedData);
+
+								// Update sensor data
 								sensorData = parsedData;
 								lastDataTimestamp = Date.now();
+
+								// Update motion store for visualization
+								motionStore.updateSensorData(parsedData);
 							}
 						}
 
 						// Add log to list
-						addLog(data.message);
-					} else if (data.type === 'sensorData') {
-						// When receiving sensor data, ensure streaming state is active
-						if (!isStreaming) {
-							isStreaming = true;
+						if (data.message) {
+							addLog(data.message);
 						}
-
-						// Track data reception for UI
-						trackDataReception();
-
-						// Extract the actual sensor data from the message structure
-						if (data.data && data.data.sensorData) {
-							sensorData = data.data.sensorData;
-						} else {
-							sensorData = data;
+					} else if (data.type === 'pong') {
+						// Calculate round-trip time for monitoring
+						const rtt = performance.now() - data.timestamp;
+						// Only log slow RTTs
+						if (rtt > 100) {
+							console.warn(`WebSocket RTT: ${Math.round(rtt)}ms`);
 						}
-
-						// Update timestamp
-						lastDataTimestamp = Date.now();
 					}
 				} catch (error) {
 					console.error('Error parsing WebSocket message:', error);
 				}
 			};
 
-			// Use a debounce mechanism for reconnection to avoid rapid cycles
-			let reconnectScheduled = false;
-
-			socket.onclose = (event) => {
-				clearTimeout(connectionTimeout);
-
-				// Don't log or reconnect if we're intentionally disconnecting
-				if (!connected) return;
-
-				console.log('WebSocket disconnected:', event);
-
-				// Prevent multiple reconnect attempts
-				if (!reconnectScheduled) {
-					reconnectScheduled = true;
-
-					addLog(
-						`WebSocket connection closed ${event.wasClean ? 'cleanly' : 'unexpectedly'} (code: ${event.code})`
-					);
-
-					setTimeout(() => {
-						reconnectScheduled = false;
-						if (connected) {
-							addLog('Attempting to reconnect WebSocket...');
-							initWebSocket();
-						}
-					}, 3000); // Wait 3 seconds before attempting to reconnect
-				}
-			};
-
 			socket.onerror = (error) => {
 				console.error('WebSocket error:', error);
 				addLog('WebSocket error occurred', LOG_ERROR);
-				// Don't try to reconnect here - let onclose handle it
 			};
 		} catch (error) {
 			console.error('Failed to create WebSocket:', error);

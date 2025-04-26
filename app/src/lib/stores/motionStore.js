@@ -78,3 +78,18 @@ export function logDebug(message, data) {
 
 	unsubscribe();
 }
+
+// Data rate tracking
+export const dataRate = writable(0);
+
+// Action to update data rate
+export function setDataRate(rate) {
+	dataRate.set(rate);
+}
+
+// You can also create a derived store for data rate status
+export const dataRateStatus = derived(dataRate, ($dataRate) => {
+	if ($dataRate < 10) return 'low';
+	if ($dataRate < 25) return 'medium';
+	return 'good';
+});

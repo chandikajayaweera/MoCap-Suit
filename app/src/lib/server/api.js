@@ -1,6 +1,7 @@
 import { SerialPort } from 'serialport';
 import { WebSocketServer } from 'ws';
 import { ReadlineParser } from '@serialport/parser-readline';
+import { GlobalThisWSS } from './webSocket.js';
 
 // Store connections
 let serialPort = null;
@@ -85,17 +86,27 @@ function handleWebSocketMessage(message, ws) {
 }
 
 // Broadcast message to all connected WebSocket clients
-function broadcast(data) {
-	if (!wss) return;
+export const broadcast = (data) => {
+	const wss = globalThis[GlobalThisWSS];
+	if (!wss || !wss.clients || wss.clients.size === 0) return;
 
+	// Prepare message once to avoid redundant JSON.stringify calls
 	const message = JSON.stringify(data);
-	for (const client of activeClients) {
-		if (client.readyState === 1) {
-			// OPEN
-			client.send(message);
-		}
-	}
-}
+
+	// Use non-blocking, high-priority nextTick for better real-time performance
+	process.nextTick(() => {
+		wss.clients.forEach((client) => {
+			if (client.readyState === 1) {
+				// OPEN
+				try {
+					client.send(message);
+				} catch (e) {
+					console.error('Error broadcasting to client:', e);
+				}
+			}
+		});
+	});
+};
 
 // Connect to serial port
 export async function connectToSerialPort(options) {
@@ -204,16 +215,34 @@ function handleSerialData(data) {
 // Parse and handle sensor data
 function handleSensorData(data) {
 	try {
-		// Check if it starts with QUAT_DATA prefix
-		if (data.startsWith('QUAT_DATA:')) {
-			const sensorData = parseSensorData(data.substring(10));
+		// Optimized extraction of data portion using string operations instead of regex
+		let cleanData = '';
+		let sensorData = null;
 
-			broadcast({
-				type: 'sensorData',
-				data: {
-					timestamp: Date.now(),
-					sensorData: sensorData
-				}
+		if (data.startsWith('DATA:QUAT_DATA:')) {
+			// Skip the prefixes and any whitespace
+			cleanData = data.substring('DATA:QUAT_DATA:'.length).trim();
+			sensorData = parseSensorDataDirect(cleanData);
+		} else if (data.startsWith('QUAT_DATA:')) {
+			// Skip the prefix and any whitespace
+			cleanData = data.substring('QUAT_DATA:'.length).trim();
+			sensorData = parseSensorDataDirect(cleanData);
+		} else {
+			// Not a sensor data packet, handle as regular message
+			return;
+		}
+
+		// Only broadcast if we have valid data
+		if (sensorData && (sensorData.sequence !== undefined || Object.keys(sensorData).length > 0)) {
+			// Use process.nextTick to prioritize broadcasting before other processing
+			process.nextTick(() => {
+				broadcast({
+					type: 'sensorData',
+					data: {
+						timestamp: Date.now(),
+						sensorData: sensorData
+					}
+				});
 			});
 		}
 	} catch (error) {
@@ -222,30 +251,84 @@ function handleSensorData(data) {
 }
 
 // Parse quaternion sensor data
-function parseSensorData(data) {
+
+/**
+ * Direct string parsing function optimized for speed and minimal memory allocation
+ * Avoids regex for better performance and less GC pressure
+ */
+function parseSensorDataDirect(data) {
 	const result = {};
 
-	// Expected format: SEQ:{seq},S0:[w,x,y,z],S1:[w,x,y,z],...
-	const parts = data.split(',');
-
-	// Extract sequence number
-	if (parts[0].startsWith('SEQ:')) {
-		result.sequence = parseInt(parts[0].substring(4), 10);
-	}
-
-	// Extract sensor data
-	for (let i = 1; i < parts.length; i++) {
-		const part = parts[i];
-		const sensorMatch = part.match(/S(\d+):\[([^\]]+)\]/);
-
-		if (sensorMatch) {
-			const sensorIndex = sensorMatch[1];
-			const values = sensorMatch[2].split(',').map(Number);
-
-			if (values.length === 4) {
-				result[`S${sensorIndex}`] = values;
+	try {
+		// Fast path for sequence extraction
+		if (data.indexOf('SEQ:') === 0) {
+			const commaPos = data.indexOf(',');
+			if (commaPos > 4) {
+				const seqStr = data.substring(4, commaPos);
+				result.sequence = parseInt(seqStr, 10);
 			}
 		}
+
+		// Fast sensor data extraction using indexOf - much faster than regex
+		let currentPos = 0;
+		const dataLen = data.length;
+
+		while ((currentPos = data.indexOf('S', currentPos)) !== -1) {
+			// Skip invalid patterns
+			if (currentPos + 1 >= dataLen) break;
+
+			// Check if next char is a digit
+			const idChar = data[currentPos + 1];
+			if (idChar < '0' || idChar > '9') {
+				currentPos++;
+				continue;
+			}
+
+			// Extract sensor ID
+			const colonPos = data.indexOf(':', currentPos);
+			if (colonPos === -1) break;
+
+			const sensorId = data.substring(currentPos + 1, colonPos);
+
+			// Extract values array
+			const bracketOpen = data.indexOf('[', colonPos);
+			if (bracketOpen === -1) break;
+
+			const bracketClose = data.indexOf(']', bracketOpen);
+			if (bracketClose === -1) break;
+
+			// Extract values and parse
+			const valuesStr = data.substring(bracketOpen + 1, bracketClose);
+			const values = [];
+
+			// Manual split and parse for better performance
+			let valueStart = 0;
+			let valueEnd = 0;
+			let valueIdx = 0;
+
+			while (valueIdx < 4 && valueEnd < valuesStr.length) {
+				valueEnd = valuesStr.indexOf(',', valueStart);
+
+				if (valueEnd === -1) {
+					// Last value
+					values.push(parseFloat(valuesStr.substring(valueStart)));
+					break;
+				} else {
+					values.push(parseFloat(valuesStr.substring(valueStart, valueEnd)));
+					valueStart = valueEnd + 1;
+					valueIdx++;
+				}
+			}
+
+			// Only add complete sensor data
+			if (values.length === 4) {
+				result[`S${sensorId}`] = values;
+			}
+
+			currentPos = bracketClose + 1;
+		}
+	} catch (e) {
+		console.error('Error in direct sensor data parsing:', e);
 	}
 
 	return result;

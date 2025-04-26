@@ -1,45 +1,40 @@
 <script>
-	// A debugging component for the visualization panel
-
-	// Props
+	// Props using the $props rune for Svelte 5
 	let { isStreaming = false, sensorData = {}, dataPacketsReceived = 0 } = $props();
 
 	// Format sensor data using standard function instead of derived value
 	function getFormattedData() {
-		console.log(
-			'DebugInfo component rendering with data:',
-			sensorData ? typeof sensorData : 'undefined',
-			sensorData ? Object.keys(sensorData).length : 0,
-			'keys'
-		);
+		// Handle different data structures more robustly
+		if (!sensorData) {
+			return 'No data received yet';
+		}
 
-		if (!sensorData || Object.keys(sensorData).length === 0) {
-			console.log('No sensorData available');
+		// Make sure sensorData is an object with content
+		if (typeof sensorData !== 'object' || Object.keys(sensorData).length === 0) {
 			return 'No data received yet';
 		}
 
 		// Format sequence number if available
 		const seq = sensorData.sequence !== undefined ? `SEQ: ${sensorData.sequence}` : '';
 
-		// Count available sensors
+		// Count available sensors more reliably
 		const activeSensors = Object.entries(sensorData).filter(
-			([key, value]) => key.startsWith('S') && Array.isArray(value)
+			([key, value]) => key.startsWith('S') && Array.isArray(value) && value.length === 4
 		).length;
 
-		const result = `${seq} | Active Sensors: ${activeSensors}`;
-		console.log('DebugInfo formatted data:', result);
-		return result;
+		// Build a more comprehensive status message
+		return `${seq} | Active Sensors: ${activeSensors}`;
 	}
 
-	// Log the props when they change
+	// Log the props when they change for debugging
 	$effect(() => {
-		console.log(
-			'DebugInfo props updated:',
-			'isStreaming =',
-			isStreaming,
-			'dataPacketsReceived =',
-			dataPacketsReceived
-		);
+		if (isStreaming && dataPacketsReceived > 0) {
+			// Only log when we're actually streaming and receiving data
+			console.log(
+				'DebugInfo sensor count:',
+				sensorData ? Object.keys(sensorData).filter((k) => k.startsWith('S')).length : 0
+			);
+		}
 	});
 </script>
 
