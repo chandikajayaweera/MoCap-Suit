@@ -3,6 +3,7 @@
 	import CommandPanel from '$lib/components/CommandPanel.svelte';
 	import LogViewer from '$lib/components/LogViewer.svelte';
 	import SensorVisualization from '$lib/components/visualization/SensorVisualization.svelte';
+	import DebugInfo from '$lib/components/DebugInfo.svelte';
 	import * as motionStore from '$lib/stores/motionStore.js';
 
 	// Define log level constants
@@ -16,17 +17,80 @@
 	let connecting = $state(false);
 	let socket;
 
+	// Streaming status
+	let isStreaming = $state(false);
+	let lastDataTimestamp = $state(0);
+	let dataPacketsReceived = $state(0);
+
 	// Data storage
 	let logs = $state([]);
 	let sensorData = $state({});
 
-	// Settings
-	let serialPort = $state('');
-	let originalPort = $state('');
-	let portChangeDetected = $state(false);
-	let showConfiguration = $state(true);
-	let availablePorts = $state([]);
-	let loadingPorts = $state(false);
+	// Clear logs handler
+	function clearLogs() {
+		logs = [];
+	}
+
+	// Increment packet counter
+	function trackDataReception() {
+		console.log(`Tracking data reception, current count: ${dataPacketsReceived}`);
+		dataPacketsReceived += 1;
+	}
+
+	// Function to parse sensor data from raw message
+	function parseDataMessage(message) {
+		if (!message || !message.includes('QUAT_DATA:')) {
+			return null;
+		}
+
+		try {
+			// Extract the QUAT_DATA part
+			let dataStart = message.indexOf('QUAT_DATA:');
+			if (dataStart === -1) return null;
+
+			// Handle different formats
+			if (message.includes('DATA:QUAT_DATA:')) {
+				dataStart = message.indexOf('DATA:QUAT_DATA:') + 5; // Skip 'DATA:' prefix
+			}
+
+			// Extract the clean data portion
+			const cleanMessage = message.substring(dataStart + 'QUAT_DATA:'.length).trim();
+
+			const result = {};
+
+			// Parse the parts
+			const parts = cleanMessage.split(',');
+
+			// Extract sequence number
+			if (parts[0] && parts[0].startsWith('SEQ:')) {
+				result.sequence = parseInt(parts[0].substring(4), 10);
+			}
+
+			// Extract sensor data
+			for (let i = 1; i < parts.length; i++) {
+				const part = parts[i];
+				// Match "S0:[0.9981,-0.0313,-0.0533,0.0000]" pattern
+				const match = part.match(/S(\d+):\[([\d\.-]+),([\d\.-]+),([\d\.-]+),([\d\.-]+)\]/);
+
+				if (match) {
+					const sensorId = match[1];
+					const values = [
+						parseFloat(match[2]), // w
+						parseFloat(match[3]), // x
+						parseFloat(match[4]), // y
+						parseFloat(match[5]) // z
+					];
+
+					result[`S${sensorId}`] = values;
+				}
+			}
+
+			return result;
+		} catch (error) {
+			console.error('Error parsing data message:', error);
+			return null;
+		}
+	}
 
 	function connect() {
 		if (connecting || connected) return;
@@ -79,6 +143,8 @@
 			.then((response) => response.json())
 			.then((data) => {
 				connected = false;
+				isStreaming = false; // Reset streaming status on disconnect
+				dataPacketsReceived = 0; // Reset packet counter
 				portChangeDetected = false;
 				motionStore.setConnected(false);
 			})
@@ -88,63 +154,148 @@
 	}
 
 	function initWebSocket() {
+		// Clean up existing socket properly before creating a new one
+		cleanupWebSocket();
+
+		// Protect against multiple simultaneous connection attempts
 		if (socket) {
-			socket.close();
+			console.warn('WebSocket connection already in progress');
+			return;
 		}
 
 		const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 		const wsUrl = `${protocol}//${window.location.host}/api/ws`;
 
 		console.log(`Connecting to WebSocket at ${wsUrl}`);
-		socket = new WebSocket(wsUrl);
 
-		socket.onopen = () => {
-			console.log('WebSocket connected');
-			addLog('WebSocket connection established');
-			motionStore.setConnected(true);
-		};
+		try {
+			socket = new WebSocket(wsUrl);
 
-		socket.onmessage = (event) => {
-			try {
-				const data = JSON.parse(event.data);
+			// Set a connection timeout
+			const connectionTimeout = setTimeout(() => {
+				if (socket && socket.readyState !== WebSocket.OPEN) {
+					console.warn('WebSocket connection timeout');
+					cleanupWebSocket();
 
-				if (data.type === 'log') {
-					if (data.message.includes('reconnected to new port')) {
-						handlePortChange(data.message);
+					if (connected) {
+						addLog('WebSocket connection timed out. Trying again...', LOG_WARNING);
+						setTimeout(initWebSocket, 3000);
 					}
-					addLog(data.message);
-				} else if (data.type === 'sensorData') {
-					sensorData = data.data.sensorData;
 				}
-			} catch (error) {
-				console.error('Error parsing WebSocket message:', error);
-			}
-		};
+			}, 10000); // 10 second timeout
 
-		socket.onclose = (event) => {
-			if (connected) {
-				setTimeout(() => {
-					initWebSocket(); // Reconnect
-				}, 2000);
-			}
+			socket.onopen = () => {
+				console.log('WebSocket connected');
+				clearTimeout(connectionTimeout);
+				addLog('WebSocket connection established');
+				motionStore.setConnected(true);
+			};
 
-			console.log('WebSocket disconnected:', event);
-			if (connected) {
-				addLog(
-					`WebSocket connection closed ${event.wasClean ? 'cleanly' : 'unexpectedly'} (code: ${event.code})`
-				);
+			socket.onmessage = (event) => {
+				try {
+					const data = JSON.parse(event.data);
 
-				setTimeout(() => {
-					addLog('Attempting to reconnect WebSocket...');
-					initWebSocket();
-				}, 2000);
-			}
-		};
+					if (data.type === 'log') {
+						// Handle port change detection
+						if (data.message.includes('reconnected to new port')) {
+							handlePortChange(data.message);
+						}
 
-		socket.onerror = (error) => {
-			console.error('WebSocket error:', error);
-			addLog('WebSocket error occurred', LOG_ERROR);
-		};
+						// Detect streaming status from logs
+						if (
+							data.message.includes('Sensor reading started') ||
+							data.message.includes('UDP server started for sensor data') ||
+							data.message.includes('UDP data streaming started')
+						) {
+							isStreaming = true;
+							lastDataTimestamp = Date.now();
+							addLog('Streaming started successfully', LOG_INFO);
+						} else if (
+							data.message.includes('Sensor reading stopped') ||
+							data.message.includes('UDP server stopped') ||
+							data.message.includes('stopped.') ||
+							data.message.includes('not running') ||
+							data.message.includes('Command sent: X')
+						) {
+							isStreaming = false;
+							addLog('Streaming stopped', LOG_INFO);
+						}
+
+						// Check for QUAT_DATA in log messages and parse it
+						if (data.message.includes('QUAT_DATA:')) {
+							const parsedData = parseDataMessage(data.message);
+							if (parsedData) {
+								trackDataReception();
+								sensorData = parsedData;
+								lastDataTimestamp = Date.now();
+							}
+						}
+
+						// Add log to list
+						addLog(data.message);
+					} else if (data.type === 'sensorData') {
+						// When receiving sensor data, ensure streaming state is active
+						if (!isStreaming) {
+							isStreaming = true;
+						}
+
+						// Track data reception for UI
+						trackDataReception();
+
+						// Extract the actual sensor data from the message structure
+						if (data.data && data.data.sensorData) {
+							sensorData = data.data.sensorData;
+						} else {
+							sensorData = data;
+						}
+
+						// Update timestamp
+						lastDataTimestamp = Date.now();
+					}
+				} catch (error) {
+					console.error('Error parsing WebSocket message:', error);
+				}
+			};
+
+			// Use a debounce mechanism for reconnection to avoid rapid cycles
+			let reconnectScheduled = false;
+
+			socket.onclose = (event) => {
+				clearTimeout(connectionTimeout);
+
+				// Don't log or reconnect if we're intentionally disconnecting
+				if (!connected) return;
+
+				console.log('WebSocket disconnected:', event);
+
+				// Prevent multiple reconnect attempts
+				if (!reconnectScheduled) {
+					reconnectScheduled = true;
+
+					addLog(
+						`WebSocket connection closed ${event.wasClean ? 'cleanly' : 'unexpectedly'} (code: ${event.code})`
+					);
+
+					setTimeout(() => {
+						reconnectScheduled = false;
+						if (connected) {
+							addLog('Attempting to reconnect WebSocket...');
+							initWebSocket();
+						}
+					}, 3000); // Wait 3 seconds before attempting to reconnect
+				}
+			};
+
+			socket.onerror = (error) => {
+				console.error('WebSocket error:', error);
+				addLog('WebSocket error occurred', LOG_ERROR);
+				// Don't try to reconnect here - let onclose handle it
+			};
+		} catch (error) {
+			console.error('Failed to create WebSocket:', error);
+			addLog(`WebSocket connection error: ${error.message}`, LOG_ERROR);
+			socket = null;
+		}
 	}
 
 	function handlePortChange(message) {
@@ -173,6 +324,19 @@
 		}
 
 		console.log('Sending command:', command);
+
+		// Update streaming state based on the command
+		if (command === 'S') {
+			// Set streaming state immediately for better UI responsiveness
+			isStreaming = true;
+			dataPacketsReceived = 0; // Reset packet counter
+			lastDataTimestamp = Date.now();
+			addLog('Sending command to start streaming...', LOG_INFO);
+		} else if (command === 'X') {
+			// Immediately mark streaming as stopped
+			isStreaming = false;
+			addLog('Sending command to stop streaming...', LOG_INFO);
+		}
 
 		try {
 			socket.send(
@@ -240,14 +404,63 @@
 			});
 	}
 
+	// Function to check for streaming timeout
+	function checkStreamingTimeout() {
+		if (isStreaming && lastDataTimestamp > 0) {
+			const now = Date.now();
+			const timeSinceLastData = now - lastDataTimestamp;
+
+			// If no data for 10 seconds while streaming is supposedly active
+			if (timeSinceLastData > 10000) {
+				isStreaming = false;
+				addLog('Streaming appears to have stopped (no data received for 10 seconds)', LOG_INFO);
+			}
+		}
+	}
+
+	// Function to properly clean up WebSocket connections
+	function cleanupWebSocket() {
+		if (socket) {
+			// Remove all event listeners to prevent memory leaks
+			socket.onopen = null;
+			socket.onmessage = null;
+			socket.onclose = null;
+			socket.onerror = null;
+
+			// Only attempt to close if the socket isn't already closed
+			if (socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) {
+				try {
+					socket.close();
+				} catch (e) {
+					console.error('Error closing socket during cleanup:', e);
+				}
+			}
+			socket = null;
+		}
+	}
+
+	// Settings
+	let serialPort = $state('');
+	let originalPort = $state('');
+	let portChangeDetected = $state(false);
+	let showConfiguration = $state(true);
+	let availablePorts = $state([]);
+	let loadingPorts = $state(false);
+
 	onMount(() => {
 		loadAvailablePorts();
+
+		// Set up interval to check if streaming has silently stopped
+		const interval = setInterval(checkStreamingTimeout, 1000);
+
+		return () => {
+			clearInterval(interval);
+			cleanupWebSocket();
+		};
 	});
 
 	onDestroy(() => {
-		if (socket) {
-			socket.close();
-		}
+		cleanupWebSocket();
 	});
 </script>
 
@@ -290,6 +503,15 @@
 							class:bg-red-400={!connected}
 						></span>
 						<span class="text-sm font-medium">{connected ? 'Connected' : 'Disconnected'}</span>
+
+						{#if connected && isStreaming}
+							<span
+								class="ml-2 flex items-center rounded bg-green-600 px-1.5 py-0.5 text-xs font-medium text-white"
+							>
+								<span class="mr-1 inline-block h-2 w-2 animate-pulse rounded-full bg-white"></span>
+								Streaming {dataPacketsReceived > 0 ? `(${dataPacketsReceived} packets)` : ''}
+							</span>
+						{/if}
 					</div>
 				</div>
 			</div>
@@ -370,7 +592,7 @@
 
 	<div class="flex flex-1 overflow-hidden">
 		<div class="w-1/4 overflow-y-auto bg-white p-4 shadow-md">
-			<CommandPanel {connected} onSendCommand={sendCommand} />
+			<CommandPanel {connected} {isStreaming} onSendCommand={sendCommand} />
 		</div>
 
 		<div class="flex w-1/2 flex-col overflow-hidden bg-white p-4 shadow-md">
@@ -378,13 +600,14 @@
 
 			<!-- This wrapper is now a flex-1, relative box -->
 			<div class="relative flex-1">
-				<SensorVisualization data={{ sensorData }} isConnected={connected} />
+				<SensorVisualization data={sensorData} isConnected={connected} />
+				<DebugInfo {isStreaming} {sensorData} {dataPacketsReceived} />
 			</div>
 		</div>
 
 		<div class="flex w-1/4 flex-col overflow-hidden bg-white p-4 shadow-md">
 			<h2 class="mb-2 font-semibold text-gray-800">System Logs</h2>
-			<LogViewer {logs} />
+			<LogViewer {logs} onClearLogs={clearLogs} />
 		</div>
 	</div>
 

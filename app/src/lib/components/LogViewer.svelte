@@ -1,8 +1,8 @@
 <script>
 	import { onMount } from 'svelte';
 
-	// Props
-	let { logs = [] } = $props();
+	// Props using the $props rune for Svelte 5
+	let { logs = [], onClearLogs = () => {} } = $props();
 
 	// Log filtering
 	let filterText = $state('');
@@ -38,25 +38,43 @@
 		return date.toLocaleTimeString();
 	}
 
-	// Clear all logs
-	function clearLogs() {
-		logs = [];
+	// Function to scroll to bottom
+	function scrollToBottom() {
+		if (logContainer) {
+			logContainer.scrollTop = logContainer.scrollHeight;
+		}
 	}
 
 	// Handle scrolling using onMount and $effect
 	onMount(() => {
 		// Initial scroll
-		if (autoscroll && logContainer) {
-			logContainer.scrollTop = logContainer.scrollHeight;
+		if (autoscroll) {
+			scrollToBottom();
 		}
 	});
 
-	// Use $effect to handle autoscrolling when logs change or autoscroll changes
+	// Watch for changes to logs or autoscroll setting
 	$effect(() => {
-		if (autoscroll && logContainer) {
-			logContainer.scrollTop = logContainer.scrollHeight;
+		// This effect will run whenever filteredLogs or autoscroll changes
+		if (autoscroll && logContainer && filteredLogs.length > 0) {
+			// Use a small timeout to ensure DOM updates first
+			setTimeout(scrollToBottom, 10);
 		}
 	});
+
+	// Monitor autoscroll manually when user scrolls
+	function handleScroll() {
+		if (!logContainer) return;
+
+		// Check if user has manually scrolled up
+		const atBottom =
+			Math.abs(logContainer.scrollHeight - logContainer.clientHeight - logContainer.scrollTop) < 50; // Allow small margin of error
+
+		// Only change autoscroll if user has scrolled and it doesn't match current setting
+		if (!atBottom && autoscroll) {
+			autoscroll = false;
+		}
+	}
 </script>
 
 <div class="flex h-full flex-col">
@@ -81,7 +99,7 @@
 			</select>
 
 			<button
-				onclick={clearLogs}
+				onclick={onClearLogs}
 				class="rounded bg-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400"
 			>
 				Clear
@@ -103,6 +121,7 @@
 	<!-- Log display -->
 	<div
 		bind:this={logContainer}
+		onscroll={handleScroll}
 		class="mb-4 flex-grow overflow-y-auto rounded bg-gray-50 p-2 font-mono text-xs shadow-inner"
 	>
 		{#if filteredLogs.length === 0}

@@ -7,7 +7,7 @@ export class ModelManager {
 	constructor() {
 		this.models = [
 			{ id: 'basic', name: 'Basic Model', url: null },
-			{ id: 'xbot', name: 'X Bot', url: '/models/Xbot.glb' },
+			{ id: 'xbot', name: 'X Bot', url: '/models/mannequin.glb' },
 			{ id: 'amy', name: 'Amy (Girl)', url: '/models/amy.glb' }
 		];
 
