@@ -1,21 +1,17 @@
+// Consolidated serial port management
 import { SerialPort } from 'serialport';
 import { ReadlineParser } from '@serialport/parser-readline';
+import { broadcast } from './webSocket.js';
 
 // Store global references
 global.serialPort = null;
 global.parser = null;
-global.activeWebSocketClients = new Set();
 global.originalPortPath = null;
 global.lastBaudRate = 115200;
 let portMonitorInterval = null;
 
 /**
- * Connect to serial port with improved handling to prevent device resets
- * @param {Object} options - Connection options
- * @param {string} options.port - Port path
- * @param {number} options.baudRate - Baud rate
- * @param {boolean} options.dtrControl - Whether to control DTR line
- * @returns {Promise<boolean>} - Success status
+ * Connect to serial port
  */
 export async function connectToSerialPort(options) {
 	try {
@@ -27,25 +23,20 @@ export async function connectToSerialPort(options) {
 			await disconnectFromSerialPort();
 		}
 
-		console.log(
-			`Connecting to ${options.port} at ${global.lastBaudRate} baud with real-time optimization`
-		);
+		console.log(`Connecting to ${options.port} at ${global.lastBaudRate} baud`);
 
-		// Create the SerialPort instance with optimized settings for real-time data
 		global.serialPort = new SerialPort({
 			path: options.port,
 			baudRate: global.lastBaudRate,
 			autoOpen: false,
-			// Critical for real-time: Disable all buffering and flow control
-			rtscts: false, // No hardware flow control
-			xon: false, // No software flow control
-			xoff: false, // No software flow control
-			hupcl: false, // Don't drop DTR on close
-			highWaterMark: 64 // Small buffer size for minimal latency
+			rtscts: false,
+			xon: false,
+			xoff: false,
+			hupcl: false,
+			highWaterMark: 64
 		});
 
 		return new Promise((resolve, reject) => {
-			// Open the port first, then set additional options
 			global.serialPort.open((error) => {
 				if (error) {
 					console.error('Error opening serial port:', error);
@@ -55,23 +46,18 @@ export async function connectToSerialPort(options) {
 
 				console.log('Serial port opened successfully');
 
-				// After opening, explicitly set DTR/RTS to prevent device reset
+				// Prevent device reset
 				setTimeout(() => {
 					try {
 						if (global.serialPort && global.serialPort.isOpen) {
-							global.serialPort.set({
-								dtr: false, // Disable DTR to prevent reset
-								rts: false, // Disable RTS
-								brk: false // No break condition
-							});
-							console.log('Serial port configured for real-time streaming');
+							global.serialPort.set({ dtr: false, rts: false, brk: false });
 						}
 					} catch (err) {
-						console.warn('Could not set DTR/RTS signals after open:', err);
+						console.warn('Could not set DTR/RTS signals:', err);
 					}
 				}, 100);
 
-				// Create parser for text data with smaller chunk size
+				// Create parser with clear error handling
 				global.parser = global.serialPort.pipe(
 					new ReadlineParser({
 						delimiter: '\n',
@@ -80,19 +66,13 @@ export async function connectToSerialPort(options) {
 					})
 				);
 
-				// For optimal real-time performance, process data immediately
+				// Ensure we handle data immediately
 				global.parser.on('data', (data) => {
-					// Skip verbose logging for sensor data to improve performance
-					if (data.startsWith('DATA:') || data.startsWith('QUAT_DATA:')) {
-						// Process sensor data without delays
-						process.nextTick(() => handleSerialData(data));
-					} else {
-						// Handle logs and other messages normally
-						handleSerialData(data);
-					}
+					// Use process.nextTick for better async performance
+					process.nextTick(() => handleSerialData(data));
 				});
 
-				// Handle errors
+				// Handle errors with proper logging
 				global.serialPort.on('error', (error) => {
 					console.error('Serial port error:', error);
 					broadcast({
@@ -104,10 +84,10 @@ export async function connectToSerialPort(options) {
 				// Send connected notification
 				broadcast({
 					type: 'log',
-					message: `[INFO] Connected to ${options.port} at ${global.lastBaudRate} baud with real-time optimization`
+					message: `[INFO] Connected to ${options.port} at ${global.lastBaudRate} baud`
 				});
 
-				// Start port monitoring for automatic reconnection
+				// Start port monitoring
 				setTimeout(() => {
 					if (global.serialPort && global.serialPort.isOpen) {
 						startPortMonitoring();
@@ -124,11 +104,9 @@ export async function connectToSerialPort(options) {
 }
 
 /**
- * Disconnect from serial port with improved cleanup
- * @returns {Promise<boolean>} - Success status
+ * Disconnect from serial port
  */
 export async function disconnectFromSerialPort() {
-	// Stop port monitoring
 	stopPortMonitoring();
 
 	return new Promise((resolve, reject) => {
@@ -159,19 +137,15 @@ export async function disconnectFromSerialPort() {
 }
 
 /**
- * Check if the port has changed (happens after device reset)
- * @returns {Promise<string|null>} - New port path or null
+ * Check if the port has changed and update accordingly
  */
 async function checkForPortChange() {
-	// Don't check if we're not connected
 	if (!global.serialPort || !global.serialPort.isOpen || !global.originalPortPath) {
 		return null;
 	}
 
 	try {
 		const ports = await SerialPort.list();
-
-		// First check if current port is still valid
 		const currentPortExists = ports.some((p) => p.path === global.serialPort.path);
 
 		if (!currentPortExists) {
@@ -179,28 +153,22 @@ async function checkForPortChange() {
 				`Current port ${global.serialPort.path} no longer found. Looking for relocated device...`
 			);
 
-			// Find our original port info to get manufacturer/serial info
+			// Find port with similar characteristics
 			const originalPortInfo = ports.find((p) => p.path === global.originalPortPath);
 
-			// If we can't find original info, try to find similar devices
 			if (!originalPortInfo) {
-				// Look for ESP32 devices or devices with similar patterns
 				const possiblePorts = ports.filter(
 					(p) =>
-						// Common ESP32 manufacturer strings or USB IDs
 						(p.manufacturer &&
 							(p.manufacturer.includes('Silicon Labs') || p.manufacturer.includes('Espressif'))) ||
-						(p.vendorId === '10c4' && p.productId === 'ea60') || // Common ESP32 USB VID/PID
-						(p.vendorId === '1a86' && p.productId === '7523') // CH340 converter often used with ESP32
+						(p.vendorId === '10c4' && p.productId === 'ea60') ||
+						(p.vendorId === '1a86' && p.productId === '7523')
 				);
 
 				if (possiblePorts.length === 1) {
 					return possiblePorts[0].path;
 				} else if (possiblePorts.length > 1) {
-					// If multiple matches, use the one with lowest port number as it's likely
-					// the one that was just reconnected
 					possiblePorts.sort((a, b) => {
-						// Extract number from COM port or similar
 						const numA = parseInt(a.path.replace(/\D/g, '')) || 0;
 						const numB = parseInt(b.path.replace(/\D/g, '')) || 0;
 						return numA - numB;
@@ -208,7 +176,6 @@ async function checkForPortChange() {
 					return possiblePorts[0].path;
 				}
 			} else {
-				// Use the manufacturer and other identifiers to find the same device on a new port
 				const newPort = ports.find(
 					(p) =>
 						p.path !== global.serialPort.path &&
@@ -222,8 +189,9 @@ async function checkForPortChange() {
 				}
 			}
 		}
-	} catch (error) {
-		console.error('Error checking for port change:', error);
+	} catch (_) {
+		// Fixed: Unused variable renamed to _
+		console.error('Error checking for port change');
 	}
 
 	return null;
@@ -233,28 +201,21 @@ async function checkForPortChange() {
  * Start monitoring for port changes
  */
 export function startPortMonitoring() {
-	// Only start monitoring if we're not already monitoring and we have a connected port
 	if (portMonitorInterval || !global.serialPort || !global.serialPort.isOpen) {
 		return;
 	}
 
 	console.log('Starting port monitoring...');
 
-	// Check every 2 seconds for port changes
 	portMonitorInterval = setInterval(async () => {
 		if (global.serialPort && global.serialPort.isOpen) {
 			const newPort = await checkForPortChange();
 
 			if (newPort) {
 				console.log(`Device reconnected on new port: ${newPort}. Attempting to reconnect...`);
-
-				// Close the current port
 				await disconnectFromSerialPort();
-
-				// Wait a bit for the port to be fully available
 				await new Promise((resolve) => setTimeout(resolve, 1500));
 
-				// Reconnect to the new port
 				try {
 					await connectToSerialPort({
 						port: newPort,
@@ -262,7 +223,6 @@ export function startPortMonitoring() {
 						dtrControl: false
 					});
 
-					// Broadcast the reconnection
 					broadcast({
 						type: 'log',
 						message: `[INFO] Automatically reconnected to new port ${newPort}`
@@ -291,12 +251,10 @@ export function stopPortMonitoring() {
 
 /**
  * List available serial ports
- * @returns {Promise<Array>} - List of ports
  */
 export async function listSerialPorts() {
 	try {
-		const ports = await SerialPort.list();
-		return ports;
+		return await SerialPort.list();
 	} catch (error) {
 		console.error('Error listing serial ports:', error);
 		throw error;
@@ -304,38 +262,49 @@ export async function listSerialPorts() {
 }
 
 /**
- * Broadcast message to all connected WebSocket clients
- * @param {Object} data - Message data
+ * Send command to serial port
  */
-function broadcast(data) {
-	if (!global.activeWebSocketClients) return;
+export function sendCommand(command) {
+	if (!global.serialPort || !global.serialPort.isOpen) {
+		console.error('Cannot send command: Port not open');
+		return false;
+	}
 
-	const message = JSON.stringify(data);
-	console.log(`Broadcasting to ${global.activeWebSocketClients.size} clients:`, data.type);
+	try {
+		global.serialPort.write(command + '\n');
+		console.log(`Command sent to serial port: ${command}`);
 
-	for (const client of global.activeWebSocketClients) {
-		try {
-			// For SvelteKit's built-in WebSocket
-			if (client.send) {
-				client.send(message);
-			}
-		} catch (error) {
-			console.error('Error broadcasting message:', error);
-		}
+		broadcast({
+			type: 'log',
+			message: `[INFO] Command sent: ${command}`
+		});
+
+		return true;
+	} catch (error) {
+		console.error('Error sending command:', error);
+		broadcast({
+			type: 'log',
+			message: `[ERROR] Failed to send command: ${error.message}`
+		});
+		return false;
 	}
 }
 
 /**
  * Handle data received from serial port
- * @param {string} data - Received data
  */
 function handleSerialData(data) {
+	// Debug logging for troubleshooting
+	console.log(`Raw serial data received: ${data.substring(0, 50)}...`);
+
 	try {
-		// Skip verbose logging for data packets to reduce CPU usage
-		if (data.startsWith('DATA:') || data.startsWith('QUAT_DATA:')) {
-			// Process sensor data directly
-			handleSensorData(data);
+		if (data.startsWith('DATA:')) {
+			// Process sensor data
+			handleSensorData(data.substring(5));
 		} else if (data.startsWith('LOG:')) {
+			// Log that we're broadcasting a log message
+			console.log(`Broadcasting log: ${data.substring(4)}`);
+
 			// Process log message
 			broadcast({
 				type: 'log',
@@ -343,6 +312,7 @@ function handleSerialData(data) {
 			});
 		} else {
 			// Unknown format, treat as log
+			console.log(`Broadcasting unknown data type: ${data}`);
 			broadcast({
 				type: 'log',
 				message: data
@@ -355,57 +325,46 @@ function handleSerialData(data) {
 
 /**
  * Parse and handle sensor data
- * @param {string} data - Sensor data
  */
 function handleSensorData(data) {
 	try {
-		// Extract and clean the data portion
 		let cleanData = '';
-		if (data.startsWith('DATA:QUAT_DATA:')) {
-			cleanData = data.substring('DATA:QUAT_DATA:'.length).trim();
-		} else if (data.startsWith('QUAT_DATA:')) {
+
+		if (data.startsWith('QUAT_DATA:')) {
 			cleanData = data.substring('QUAT_DATA:'.length).trim();
-		} else if (data.startsWith('DATA:')) {
-			// Try to find QUAT_DATA in the remaining string
-			const qIndex = data.indexOf('QUAT_DATA:', 5);
-			if (qIndex !== -1) {
-				cleanData = data.substring(qIndex + 'QUAT_DATA:'.length).trim();
-			} else {
-				return; // Not a sensor data packet
-			}
+		} else if (data.indexOf('QUAT_DATA:') !== -1) {
+			const index = data.indexOf('QUAT_DATA:');
+			cleanData = data.substring(index + 'QUAT_DATA:'.length).trim();
+		} else {
+			return;
 		}
 
 		if (!cleanData) return;
 
-		// Parse the data with the optimized non-regex method
 		const sensorData = parseSensorData(cleanData);
-
-		// Only broadcast if we have valid data (performance optimization)
 		const sensorCount = Object.keys(sensorData).filter((k) => k.startsWith('S')).length;
 
 		if (sensorCount > 0 || sensorData.sequence !== undefined) {
-			// Create a timestamp when we process the data (not when we send it)
-			const timestamp = Date.now();
+			// Log that we're broadcasting sensor data
+			console.log(
+				`Broadcasting sensor data with ${sensorCount} sensors, seq: ${sensorData.sequence}`
+			);
 
-			// Immediate broadcast without additional processing
 			broadcast({
 				type: 'sensorData',
 				data: {
-					timestamp: timestamp,
+					timestamp: Date.now(),
 					sensorData: sensorData
 				}
 			});
 		}
 	} catch (error) {
-		// Only log errors in sensor processing, don't disrupt the data flow
 		console.error('Error processing sensor data:', error);
 	}
 }
 
 /**
  * Parse quaternion sensor data
- * @param {string} data - Raw sensor data string
- * @returns {Object} - Parsed sensor data
  */
 function parseSensorData(data) {
 	const result = {};
@@ -420,16 +379,14 @@ function parseSensorData(data) {
 			}
 		}
 
-		// Extract sensor data efficiently
+		// Extract sensor data
 		let currentPos = 0;
 		while ((currentPos = data.indexOf('S', currentPos)) !== -1) {
-			// Fast check for sensor pattern
 			if (currentPos + 1 >= data.length || !isDigit(data[currentPos + 1])) {
 				currentPos++;
 				continue;
 			}
 
-			// Find sensor format S0:[w,x,y,z]
 			const sensorIdEnd = data.indexOf(':', currentPos);
 			if (sensorIdEnd === -1) break;
 
@@ -450,26 +407,23 @@ function parseSensorData(data) {
 
 			currentPos = valuesEnd + 1;
 		}
-	} catch (err) {
-		// Silent error handling to keep performance high
+	} catch (_) {
+		// Fixed: Unused variable renamed to _
+		// Silent error handling to avoid crashes
 	}
 
 	return result;
 }
 
 /**
- * Fast check if character is a digit - more efficient than regex
- * @param {string} char - Single character to check
- * @returns {boolean} - True if digit
+ * Check if character is a digit
  */
 function isDigit(char) {
 	return char >= '0' && char <= '9';
 }
 
 /**
- * Optimized string split for comma-separated values
- * @param {string} str - String to split
- * @returns {Array} - Array of values
+ * Fast string split for comma-separated values
  */
 function fastSplit(str) {
 	const result = [];
@@ -484,7 +438,6 @@ function fastSplit(str) {
 		pos++;
 	}
 
-	// Add the last part
 	if (start < str.length) {
 		result.push(str.substring(start));
 	}

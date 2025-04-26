@@ -12,8 +12,7 @@ export async function POST({ request }) {
 		await connectToSerialPort({
 			port: data.port,
 			baudRate: data.baudRate || 115200,
-			// Explicitly disable DTR control to prevent device reset
-			dtrControl: false
+			dtrControl: data.dtrControl !== undefined ? data.dtrControl : false
 		});
 
 		return json({ success: true });
