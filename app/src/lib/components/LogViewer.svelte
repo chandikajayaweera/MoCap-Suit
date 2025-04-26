@@ -1,27 +1,31 @@
 <script>
-	import { onMount, afterUpdate } from 'svelte';
+	import { onMount } from 'svelte';
 
-	export let logs = [];
+	// Props
+	let { logs = [] } = $props();
 
 	// Log filtering
-	let filterText = '';
-	let filterLevel = 'all';
-	let autoscroll = true;
+	let filterText = $state('');
+	let filterLevel = $state('all');
+	let autoscroll = $state(true);
 
 	// DOM reference to log container for autoscrolling
 	let logContainer;
 
 	// Filtered logs based on search text and level
-	$: filteredLogs = logs.filter((log) => {
-		const matchesText = !filterText || log.message.toLowerCase().includes(filterText.toLowerCase());
-		const matchesLevel =
-			filterLevel === 'all' ||
-			(filterLevel === 'error' && log.message.includes('[ERROR]')) ||
-			(filterLevel === 'warning' && log.message.includes('[WARNING]')) ||
-			(filterLevel === 'debug' && log.message.includes('[DEBUG]'));
+	const filteredLogs = $derived(
+		logs.filter((log) => {
+			const matchesText =
+				!filterText || log.message.toLowerCase().includes(filterText.toLowerCase());
+			const matchesLevel =
+				filterLevel === 'all' ||
+				(filterLevel === 'error' && log.message.includes('[ERROR]')) ||
+				(filterLevel === 'warning' && log.message.includes('[WARNING]')) ||
+				(filterLevel === 'debug' && log.message.includes('[DEBUG]'));
 
-		return matchesText && matchesLevel;
-	});
+			return matchesText && matchesLevel;
+		})
+	);
 
 	function getLogStyle(message) {
 		if (message.includes('[ERROR]')) return 'text-red-600';
@@ -34,8 +38,21 @@
 		return date.toLocaleTimeString();
 	}
 
-	// Auto-scroll to bottom when new logs arrive
-	afterUpdate(() => {
+	// Clear all logs
+	function clearLogs() {
+		logs = [];
+	}
+
+	// Handle scrolling using onMount and $effect
+	onMount(() => {
+		// Initial scroll
+		if (autoscroll && logContainer) {
+			logContainer.scrollTop = logContainer.scrollHeight;
+		}
+	});
+
+	// Use $effect to handle autoscrolling when logs change or autoscroll changes
+	$effect(() => {
 		if (autoscroll && logContainer) {
 			logContainer.scrollTop = logContainer.scrollHeight;
 		}
@@ -62,6 +79,13 @@
 				<option value="warning">Warnings</option>
 				<option value="debug">Debug</option>
 			</select>
+
+			<button
+				onclick={clearLogs}
+				class="rounded bg-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400"
+			>
+				Clear
+			</button>
 		</div>
 
 		<div class="flex items-center">

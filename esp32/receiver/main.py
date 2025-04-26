@@ -1,4 +1,3 @@
-# main.py (receiver) - Improved version with bug fixes
 import network
 import socket
 import sys
@@ -180,7 +179,7 @@ class NetworkManager:
         return False
 
     def create_tcp_socket(self):
-        """Create TCP socket with better error handling and socket options"""
+        """Create TCP socket"""
         try:
             # Close existing socket if it exists
             if self.tcp_socket:

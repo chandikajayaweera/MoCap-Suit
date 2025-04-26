@@ -1,4 +1,3 @@
-# main.py (node) - Improved version with fixes
 import network
 import socket
 import machine

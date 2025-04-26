@@ -2,25 +2,31 @@
 	import { onMount, onDestroy } from 'svelte';
 	import CommandPanel from '$lib/components/CommandPanel.svelte';
 	import LogViewer from '$lib/components/LogViewer.svelte';
-	import SensorVisualization from '$lib/components/SensorVisualization.svelte';
+	import SensorVisualization from '$lib/components/visualization/SensorVisualization.svelte';
+	import * as motionStore from '$lib/stores/motionStore.js';
+
+	// Define log level constants
+	const LOG_INFO = 'INFO';
+	const LOG_WARNING = 'WARNING';
+	const LOG_ERROR = 'ERROR';
+	const LOG_DEBUG = 'DEBUG';
 
 	// Connection status
-	let connected = false;
-	let connecting = false;
+	let connected = $state(false);
+	let connecting = $state(false);
 	let socket;
 
 	// Data storage
-	let logs = [];
-	let sensorData = {};
+	let logs = $state([]);
+	let sensorData = $state({});
 
 	// Settings
-	let serialPort = '';
-	let originalPort = '';
-	let portChangeDetected = false;
-	let reconnecting = false;
-	let showConfiguration = true;
-	let availablePorts = [];
-	let loadingPorts = false;
+	let serialPort = $state('');
+	let originalPort = $state('');
+	let portChangeDetected = $state(false);
+	let showConfiguration = $state(true);
+	let availablePorts = $state([]);
+	let loadingPorts = $state(false);
 
 	function connect() {
 		if (connecting || connected) return;
@@ -55,7 +61,7 @@
 				}
 			})
 			.catch((error) => {
-				alert('Connection error: ' + error);
+				alert('Connection error: ' + error.message || error);
 			})
 			.finally(() => {
 				connecting = false;
@@ -74,9 +80,10 @@
 			.then((data) => {
 				connected = false;
 				portChangeDetected = false;
+				motionStore.setConnected(false);
 			})
 			.catch((error) => {
-				alert('Disconnect error: ' + error);
+				alert('Disconnect error: ' + (error.message || error));
 			});
 	}
 
@@ -93,10 +100,8 @@
 
 		socket.onopen = () => {
 			console.log('WebSocket connected');
-			logs = [
-				...logs,
-				{ timestamp: new Date(), message: '[CLIENT] WebSocket connection established' }
-			];
+			addLog('WebSocket connection established');
+			motionStore.setConnected(true);
 		};
 
 		socket.onmessage = (event) => {
@@ -107,12 +112,9 @@
 					if (data.message.includes('reconnected to new port')) {
 						handlePortChange(data.message);
 					}
-					logs = [...logs, { timestamp: new Date(), message: data.message }];
-					if (logs.length > 1000) {
-						logs = logs.slice(-1000);
-					}
+					addLog(data.message);
 				} else if (data.type === 'sensorData') {
-					sensorData = data.data;
+					sensorData = data.data.sensorData;
 				}
 			} catch (error) {
 				console.error('Error parsing WebSocket message:', error);
@@ -125,31 +127,23 @@
 					initWebSocket(); // Reconnect
 				}, 2000);
 			}
+
 			console.log('WebSocket disconnected:', event);
 			if (connected) {
-				logs = [
-					...logs,
-					{
-						timestamp: new Date(),
-						message: `[CLIENT] WebSocket connection closed ${event.wasClean ? 'cleanly' : 'unexpectedly'} (code: ${event.code})`
-					}
-				];
+				addLog(
+					`WebSocket connection closed ${event.wasClean ? 'cleanly' : 'unexpectedly'} (code: ${event.code})`
+				);
 
-				if (connected) {
-					setTimeout(() => {
-						logs = [
-							...logs,
-							{ timestamp: new Date(), message: '[CLIENT] Attempting to reconnect WebSocket...' }
-						];
-						initWebSocket();
-					}, 2000);
-				}
+				setTimeout(() => {
+					addLog('Attempting to reconnect WebSocket...');
+					initWebSocket();
+				}, 2000);
 			}
 		};
 
 		socket.onerror = (error) => {
 			console.error('WebSocket error:', error);
-			logs = [...logs, { timestamp: new Date(), message: '[ERROR] WebSocket error occurred' }];
+			addLog('WebSocket error occurred', LOG_ERROR);
 		};
 	}
 
@@ -160,13 +154,9 @@
 
 			if (serialPort !== newPort) {
 				portChangeDetected = true;
-				logs = [
-					...logs,
-					{
-						timestamp: new Date(),
-						message: `[NOTICE] Device has reconnected on port ${newPort} (was ${serialPort}). Port selection has been updated.`
-					}
-				];
+				addLog(
+					`Device has reconnected on port ${newPort} (was ${serialPort}). Port selection has been updated.`
+				);
 
 				serialPort = newPort;
 				setTimeout(() => {
@@ -192,18 +182,34 @@
 				})
 			);
 
-			logs = [...logs, { timestamp: new Date(), message: `[CLIENT] Sent command: ${command}` }];
+			addLog(`Sent command: ${command}`);
 		} catch (error) {
 			console.error('Error sending command:', error);
-			logs = [
-				...logs,
-				{ timestamp: new Date(), message: `[ERROR] Failed to send command: ${error.message}` }
-			];
+			addLog(`Failed to send command: ${error.message || error}`, LOG_ERROR);
 		}
 	}
 
-	function clearLogs() {
-		logs = [];
+	function addLog(message, level = '') {
+		const PREFIX_MAP = {
+			[LOG_ERROR]: '[ERROR] ',
+			[LOG_WARNING]: '[WARNING] ',
+			[LOG_DEBUG]: '[DEBUG] '
+		};
+
+		const prefix = PREFIX_MAP[level] || '';
+
+		logs = [
+			...logs,
+			{
+				timestamp: new Date(),
+				message: prefix + message
+			}
+		];
+
+		// Keep logs at reasonable size
+		if (logs.length > 1000) {
+			logs = logs.slice(-1000);
+		}
 	}
 
 	function loadAvailablePorts() {
@@ -252,7 +258,7 @@
 
 			<div class="flex items-center gap-4">
 				<button
-					on:click={() => (showConfiguration = !showConfiguration)}
+					onclick={() => (showConfiguration = !showConfiguration)}
 					class="rounded bg-blue-700 px-3 py-1.5 text-white transition hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-opacity-75"
 				>
 					{showConfiguration ? 'Hide Settings' : 'Show Settings'}
@@ -260,14 +266,14 @@
 
 				{#if connected}
 					<button
-						on:click={disconnect}
+						onclick={disconnect}
 						class="rounded bg-red-600 px-3 py-1.5 text-white transition hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-opacity-75"
 					>
 						Disconnect
 					</button>
 				{:else}
 					<button
-						on:click={connect}
+						onclick={connect}
 						class="rounded bg-green-600 px-3 py-1.5 text-white transition hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-400 focus:ring-opacity-75 disabled:bg-green-400"
 						disabled={connecting}
 					>
@@ -319,7 +325,7 @@
 				</div>
 
 				<button
-					on:click={loadAvailablePorts}
+					onclick={loadAvailablePorts}
 					class="rounded border border-gray-300 bg-white px-3 py-1 text-sm transition hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 disabled:opacity-50"
 					disabled={connected || loadingPorts}
 				>
@@ -351,7 +357,7 @@
 					</div>
 					<div class="mt-3">
 						<button
-							on:click={() => (portChangeDetected = false)}
+							onclick={() => (portChangeDetected = false)}
 							class="text-sm font-medium text-yellow-800 hover:text-yellow-500"
 						>
 							Dismiss
@@ -367,25 +373,17 @@
 			<CommandPanel {connected} onSendCommand={sendCommand} />
 		</div>
 
-		<div class="w-1/2 overflow-hidden bg-white p-4 shadow-md">
-			<div class="flex h-full flex-col">
-				<h2 class="mb-2 font-semibold text-gray-800">Visualization</h2>
-				<div class="flex-1">
-					<SensorVisualization data={sensorData} {connected} />
-				</div>
+		<div class="flex w-1/2 flex-col overflow-hidden bg-white p-4 shadow-md">
+			<h2 class="mb-2 font-semibold text-gray-800">Visualization</h2>
+
+			<!-- This wrapper is now a flex-1, relative box -->
+			<div class="relative flex-1">
+				<SensorVisualization data={{ sensorData }} isConnected={connected} />
 			</div>
 		</div>
 
 		<div class="flex w-1/4 flex-col overflow-hidden bg-white p-4 shadow-md">
-			<div class="mb-2 flex items-center justify-between">
-				<h2 class="font-semibold text-gray-800">System Logs</h2>
-				<button
-					on:click={clearLogs}
-					class="rounded bg-gray-200 px-2 py-1 text-sm text-gray-700 transition hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-opacity-50"
-				>
-					Clear
-				</button>
-			</div>
+			<h2 class="mb-2 font-semibold text-gray-800">System Logs</h2>
 			<LogViewer {logs} />
 		</div>
 	</div>
