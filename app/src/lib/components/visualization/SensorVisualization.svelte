@@ -29,6 +29,15 @@
 	let sceneContext = null;
 	let initialized = false;
 
+	// Debug data reception
+	$: if (data && Object.keys(data).length > 0) {
+		// Check if we have sensor data
+		const sensorCount = Object.keys(data).filter((k) => k.startsWith('S')).length;
+		if (sensorCount > 0 && data.sequence !== undefined) {
+			console.log(`Visualization received data: seq=${data.sequence}, sensors=${sensorCount}`);
+		}
+	}
+
 	// Push incoming props/data into the stores
 	$: setConnected(isConnected);
 	$: if (data?.sensorData) {

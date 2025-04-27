@@ -1,14 +1,15 @@
 // Consolidated serial port management
 import { SerialPort } from 'serialport';
-import { ReadlineParser } from '@serialport/parser-readline';
 import { broadcast } from './webSocket.js';
 
 // Store global references
 global.serialPort = null;
-global.parser = null;
 global.originalPortPath = null;
 global.lastBaudRate = 115200;
 let portMonitorInterval = null;
+
+// Buffer for accumulating partial packets
+let dataBuffer = Buffer.alloc(0);
 
 /**
  * Connect to serial port
@@ -57,19 +58,13 @@ export async function connectToSerialPort(options) {
 					}
 				}, 100);
 
-				// Create parser with clear error handling
-				global.parser = global.serialPort.pipe(
-					new ReadlineParser({
-						delimiter: '\n',
-						encoding: 'utf8',
-						includeDelimiter: false
-					})
-				);
+				// Reset data buffer
+				dataBuffer = Buffer.alloc(0);
 
-				// Ensure we handle data immediately
-				global.parser.on('data', (data) => {
-					// Use process.nextTick for better async performance
-					process.nextTick(() => handleSerialData(data));
+				// Handle raw data directly instead of using a line parser
+				global.serialPort.on('data', (chunk) => {
+					// Process data in the next tick for better performance
+					process.nextTick(() => handleSerialChunk(chunk));
 				});
 
 				// Handle errors with proper logging
@@ -125,15 +120,243 @@ export async function disconnectFromSerialPort() {
 
 				console.log('Serial port closed successfully');
 				global.serialPort = null;
-				global.parser = null;
+				dataBuffer = Buffer.alloc(0);
 				resolve(true);
 			});
 		} else {
 			global.serialPort = null;
-			global.parser = null;
+			dataBuffer = Buffer.alloc(0);
 			resolve(true);
 		}
 	});
+}
+
+/**
+ * Handle incoming data chunk from serial port
+ * This uses a buffer-based approach similar to the benchmark script
+ */
+function handleSerialChunk(chunk) {
+	// Append new data to our buffer
+	dataBuffer = Buffer.concat([dataBuffer, chunk]);
+
+	// Process all complete packets in the buffer
+	processBuffer();
+}
+
+/**
+ * Process the data buffer for complete packets
+ */
+function processBuffer() {
+	let processedUpTo = 0;
+
+	// Process DATA packets
+	while (true) {
+		// Look for DATA: marker
+		const dataStart = dataBuffer.indexOf('DATA:', processedUpTo);
+		if (dataStart === -1) break;
+
+		// Look for the start of the next packet
+		const nextDataStart = dataBuffer.indexOf('DATA:', dataStart + 5);
+		if (nextDataStart === -1) break; // Incomplete packet, wait for more data
+
+		// Extract the complete packet
+		const packet = dataBuffer.slice(dataStart + 5, nextDataStart);
+
+		// Process the packet
+		processSensorDataPacket(packet);
+
+		// Move the processed pointer
+		processedUpTo = nextDataStart;
+	}
+
+	// Process LOG messages
+	while (true) {
+		const logStart = dataBuffer.indexOf('LOG:', processedUpTo);
+		if (logStart === -1) break;
+
+		// Find the end of the log message (newline or next LOG:/DATA:)
+		let logEnd = dataBuffer.indexOf('\n', logStart);
+		const nextLogStart = dataBuffer.indexOf('LOG:', logStart + 4);
+		const nextDataStart = dataBuffer.indexOf('DATA:', logStart + 4);
+
+		// Choose the closest endpoint
+		if (logEnd === -1) logEnd = Infinity;
+		if (nextLogStart !== -1 && nextLogStart < logEnd) logEnd = nextLogStart;
+		if (nextDataStart !== -1 && nextDataStart < logEnd) logEnd = nextDataStart;
+
+		if (logEnd === Infinity) break; // No complete log message yet
+
+		// Extract the log message
+		const logMessage = dataBuffer
+			.slice(logStart + 4, logEnd)
+			.toString()
+			.trim();
+
+		// Process the log message
+		if (logMessage) {
+			broadcast({
+				type: 'log',
+				message: logMessage
+			});
+		}
+
+		// Move the processed pointer
+		processedUpTo = logEnd;
+	}
+
+	// Keep only unprocessed data in the buffer
+	if (processedUpTo > 0) {
+		dataBuffer = dataBuffer.slice(processedUpTo);
+	}
+
+	// If buffer is getting too large without successful processing,
+	// it might indicate a protocol issue - truncate it as a safety measure
+	if (dataBuffer.length > 10000) {
+		console.warn(`Data buffer too large (${dataBuffer.length} bytes), truncating`);
+		dataBuffer = dataBuffer.slice(dataBuffer.length - 1000);
+	}
+}
+
+/**
+ * Process a single sensor data packet
+ */
+function processSensorDataPacket(packet) {
+	try {
+		// Convert to string for parsing
+		const data = packet.toString().trim();
+
+		// Skip empty packets
+		if (!data) return;
+
+		// Parse only packets with quaternion data
+		if (data.includes('QUAT_DATA:')) {
+			const cleanData = extractQuatData(data);
+			if (cleanData) {
+				const sensorData = parseSensorData(cleanData);
+				const sensorCount = Object.keys(sensorData).filter((k) => k.startsWith('S')).length;
+
+				if (sensorCount > 0 || sensorData.sequence !== undefined) {
+					// Only log occasionally to reduce console noise
+					if (sensorData.sequence % 25 === 0) {
+						console.log(
+							`Broadcasting sensor data with ${sensorCount} sensors, seq: ${sensorData.sequence}`
+						);
+					}
+
+					broadcast({
+						type: 'sensorData',
+						data: {
+							timestamp: Date.now(),
+							sensorData: sensorData
+						}
+					});
+				}
+			}
+		} else {
+			// If it's not a QUAT_DATA packet, treat as log
+			console.log(`Broadcasting unknown data: ${data.substring(0, 50)}...`);
+			broadcast({
+				type: 'log',
+				message: data
+			});
+		}
+	} catch (error) {
+		console.error('Error processing sensor packet:', error);
+	}
+}
+
+/**
+ * Extract quaternion data from a mixed message
+ */
+function extractQuatData(data) {
+	if (data.startsWith('QUAT_DATA:')) {
+		return data.substring('QUAT_DATA:'.length).trim();
+	} else if (data.indexOf('QUAT_DATA:') !== -1) {
+		const index = data.indexOf('QUAT_DATA:');
+		return data.substring(index + 'QUAT_DATA:'.length).trim();
+	}
+	return data; // Try to parse as-is if no prefix found
+}
+
+/**
+ * Parse quaternion sensor data
+ */
+function parseSensorData(data) {
+	const result = {};
+
+	try {
+		// Extract sequence number
+		if (data.includes('SEQ:')) {
+			const seqPart = data.substring(data.indexOf('SEQ:') + 4);
+			const seqEnd = seqPart.indexOf(',');
+			if (seqEnd > 0) {
+				result.sequence = parseInt(seqPart.substring(0, seqEnd), 10);
+			}
+		}
+
+		// Extract sensor data
+		let currentPos = 0;
+		while ((currentPos = data.indexOf('S', currentPos)) !== -1) {
+			if (currentPos + 1 >= data.length || !isDigit(data[currentPos + 1])) {
+				currentPos++;
+				continue;
+			}
+
+			const sensorIdEnd = data.indexOf(':', currentPos);
+			if (sensorIdEnd === -1) break;
+
+			const sensorId = data.substring(currentPos + 1, sensorIdEnd);
+
+			const valuesStart = data.indexOf('[', sensorIdEnd);
+			if (valuesStart === -1) break;
+
+			const valuesEnd = data.indexOf(']', valuesStart);
+			if (valuesEnd === -1) break;
+
+			const valuesStr = data.substring(valuesStart + 1, valuesEnd);
+			const values = fastSplit(valuesStr).map(parseFloat);
+
+			if (values.length === 4) {
+				result[`S${sensorId}`] = values;
+			}
+
+			currentPos = valuesEnd + 1;
+		}
+	} catch (error) {
+		console.error('Error parsing sensor data:', error);
+	}
+
+	return result;
+}
+
+/**
+ * Check if character is a digit
+ */
+function isDigit(char) {
+	return char >= '0' && char <= '9';
+}
+
+/**
+ * Fast string split for comma-separated values
+ */
+function fastSplit(str) {
+	const result = [];
+	let start = 0;
+	let pos = 0;
+
+	while (pos < str.length) {
+		if (str[pos] === ',') {
+			result.push(str.substring(start, pos));
+			start = pos + 1;
+		}
+		pos++;
+	}
+
+	if (start < str.length) {
+		result.push(str.substring(start));
+	}
+
+	return result;
 }
 
 /**
@@ -189,9 +412,8 @@ async function checkForPortChange() {
 				}
 			}
 		}
-	} catch (_) {
-		// Fixed: Unused variable renamed to _
-		console.error('Error checking for port change');
+	} catch (error) {
+		console.error('Error checking for port change:', error);
 	}
 
 	return null;
@@ -288,159 +510,4 @@ export function sendCommand(command) {
 		});
 		return false;
 	}
-}
-
-/**
- * Handle data received from serial port
- */
-function handleSerialData(data) {
-	// Debug logging for troubleshooting
-	console.log(`Raw serial data received: ${data.substring(0, 50)}...`);
-
-	try {
-		if (data.startsWith('DATA:')) {
-			// Process sensor data
-			handleSensorData(data.substring(5));
-		} else if (data.startsWith('LOG:')) {
-			// Log that we're broadcasting a log message
-			console.log(`Broadcasting log: ${data.substring(4)}`);
-
-			// Process log message
-			broadcast({
-				type: 'log',
-				message: data.substring(4)
-			});
-		} else {
-			// Unknown format, treat as log
-			console.log(`Broadcasting unknown data type: ${data}`);
-			broadcast({
-				type: 'log',
-				message: data
-			});
-		}
-	} catch (error) {
-		console.error('Error handling serial data:', error);
-	}
-}
-
-/**
- * Parse and handle sensor data
- */
-function handleSensorData(data) {
-	try {
-		let cleanData = '';
-
-		if (data.startsWith('QUAT_DATA:')) {
-			cleanData = data.substring('QUAT_DATA:'.length).trim();
-		} else if (data.indexOf('QUAT_DATA:') !== -1) {
-			const index = data.indexOf('QUAT_DATA:');
-			cleanData = data.substring(index + 'QUAT_DATA:'.length).trim();
-		} else {
-			return;
-		}
-
-		if (!cleanData) return;
-
-		const sensorData = parseSensorData(cleanData);
-		const sensorCount = Object.keys(sensorData).filter((k) => k.startsWith('S')).length;
-
-		if (sensorCount > 0 || sensorData.sequence !== undefined) {
-			// Log that we're broadcasting sensor data
-			console.log(
-				`Broadcasting sensor data with ${sensorCount} sensors, seq: ${sensorData.sequence}`
-			);
-
-			broadcast({
-				type: 'sensorData',
-				data: {
-					timestamp: Date.now(),
-					sensorData: sensorData
-				}
-			});
-		}
-	} catch (error) {
-		console.error('Error processing sensor data:', error);
-	}
-}
-
-/**
- * Parse quaternion sensor data
- */
-function parseSensorData(data) {
-	const result = {};
-
-	try {
-		// Extract sequence number
-		if (data.includes('SEQ:')) {
-			const seqPart = data.substring(data.indexOf('SEQ:') + 4);
-			const seqEnd = seqPart.indexOf(',');
-			if (seqEnd > 0) {
-				result.sequence = parseInt(seqPart.substring(0, seqEnd), 10);
-			}
-		}
-
-		// Extract sensor data
-		let currentPos = 0;
-		while ((currentPos = data.indexOf('S', currentPos)) !== -1) {
-			if (currentPos + 1 >= data.length || !isDigit(data[currentPos + 1])) {
-				currentPos++;
-				continue;
-			}
-
-			const sensorIdEnd = data.indexOf(':', currentPos);
-			if (sensorIdEnd === -1) break;
-
-			const sensorId = data.substring(currentPos + 1, sensorIdEnd);
-
-			const valuesStart = data.indexOf('[', sensorIdEnd);
-			if (valuesStart === -1) break;
-
-			const valuesEnd = data.indexOf(']', valuesStart);
-			if (valuesEnd === -1) break;
-
-			const valuesStr = data.substring(valuesStart + 1, valuesEnd);
-			const values = fastSplit(valuesStr).map(parseFloat);
-
-			if (values.length === 4) {
-				result[`S${sensorId}`] = values;
-			}
-
-			currentPos = valuesEnd + 1;
-		}
-	} catch (_) {
-		// Fixed: Unused variable renamed to _
-		// Silent error handling to avoid crashes
-	}
-
-	return result;
-}
-
-/**
- * Check if character is a digit
- */
-function isDigit(char) {
-	return char >= '0' && char <= '9';
-}
-
-/**
- * Fast string split for comma-separated values
- */
-function fastSplit(str) {
-	const result = [];
-	let start = 0;
-	let pos = 0;
-
-	while (pos < str.length) {
-		if (str[pos] === ',') {
-			result.push(str.substring(start, pos));
-			start = pos + 1;
-		}
-		pos++;
-	}
-
-	if (start < str.length) {
-		result.push(str.substring(start));
-	}
-
-	return result;
 }

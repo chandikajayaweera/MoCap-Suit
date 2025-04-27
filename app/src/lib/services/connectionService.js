@@ -8,7 +8,9 @@ import {
 	setLastDataTimestamp,
 	setPortChangeDetected,
 	setOriginalPort,
-	serialPort
+	serialPort,
+	sensorData,
+	lastDataTimestamp
 } from '../stores/connectionStore.js';
 
 import { updateSensorData } from '../stores/motionStore.js';
@@ -80,7 +82,7 @@ export async function disconnect() {
 }
 
 /**
- * Initialize WebSocket connection with heartbeat and reconnection
+ * Initialize WebSocket connection
  */
 export function initWebSocket() {
 	cleanupWebSocket();
@@ -218,6 +220,7 @@ function handleWebSocketMessage(event) {
 		// Update heartbeat timestamp on any message
 		lastHeartbeatResponse = Date.now();
 
+		// Process different message types
 		if (data.type === 'sensorData') {
 			processSensorData(data);
 		} else if (data.type === 'log') {
@@ -234,31 +237,54 @@ function handleWebSocketMessage(event) {
  * Process sensor data from WebSocket
  */
 function processSensorData(data) {
-	// Extract sensor data
-	let extractedData;
-	if (data.data && data.data.sensorData) {
-		extractedData = data.data.sensorData;
-	} else if (data.data) {
-		extractedData = data.data;
-	} else {
-		extractedData = data;
-	}
+	try {
+		// Log data reception for debugging
+		console.log('Processing sensor data:', data?.data?.sensorData?.sequence || 'unknown sequence');
 
-	// Process valid data
-	if (extractedData && typeof extractedData === 'object') {
-		setStreaming(true);
+		// Extract sensor data
+		let extractedData;
+		if (data.data && data.data.sensorData) {
+			extractedData = data.data.sensorData;
+		} else if (data.data) {
+			extractedData = data.data;
+		} else {
+			extractedData = data;
+		}
 
-		// Track reception for statistics
-		trackDataReception(extractedData);
+		// Process valid data with explicit validation
+		if (extractedData && typeof extractedData === 'object') {
+			// Debug active sensors
+			const sensorCount = Object.keys(extractedData).filter((k) => k.startsWith('S')).length;
 
-		// Update timestamp
-		setLastDataTimestamp(Date.now());
+			console.log(
+				'Valid sensor data found:',
+				sensorCount,
+				'sensors, sequence:',
+				extractedData.sequence
+			);
 
-		// Update stores
-		updateSensorData(extractedData);
+			setStreaming(true);
 
-		// Ensure visualization updates at next animation frame
-		scheduleVisualUpdate();
+			// Track reception for statistics
+			trackDataReception(extractedData);
+
+			// Update timestamp
+			setLastDataTimestamp(Date.now());
+
+			// CRITICAL FIX: Update BOTH stores to ensure data flows to UI components
+			// The connectionStore's sensorData
+			sensorData.set(extractedData);
+
+			// The motionStore's sensorData
+			updateSensorData(extractedData);
+
+			// Ensure visualization updates at next animation frame
+			scheduleVisualUpdate();
+		} else {
+			console.warn('Invalid sensor data structure:', extractedData);
+		}
+	} catch (error) {
+		console.error('Error processing sensor data:', error);
 	}
 }
 
@@ -298,7 +324,7 @@ function processLogMessage(data) {
 	const now = Date.now();
 	let lastTimestamp = 0;
 
-	const unsubscribe = setLastDataTimestamp.subscribe((value) => {
+	const unsubscribe = lastDataTimestamp.subscribe((value) => {
 		lastTimestamp = value;
 	});
 	unsubscribe();
@@ -310,7 +336,18 @@ function processLogMessage(data) {
 		if (parsedData) {
 			trackDataReception(parsedData);
 			setLastDataTimestamp(now);
+
+			// Update both stores
+			sensorData.set(parsedData);
 			updateSensorData(parsedData);
+
+			// Log the parsed data
+			console.log(
+				'Parsed QUAT_DATA from log:',
+				Object.keys(parsedData).filter((k) => k.startsWith('S')).length,
+				'sensors, sequence:',
+				parsedData.sequence
+			);
 		}
 	}
 }

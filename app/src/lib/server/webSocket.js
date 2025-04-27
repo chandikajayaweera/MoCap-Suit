@@ -143,20 +143,42 @@ export const broadcast = (data) => {
 	const wss = globalThis[GlobalThisWSS];
 	if (!wss) return;
 
-	// Prepare message once to avoid redundant JSON.stringify calls
-	const message = JSON.stringify(data);
+	// Check for sensorData to optimize broadcasting
+	const isSensorData = data.type === 'sensorData';
 
-	// Use non-blocking process.nextTick for better real-time performance
-	process.nextTick(() => {
+	// Don't buffer sensor data - send immediately
+	if (isSensorData) {
+		// Prepare message
+		const message = JSON.stringify(data);
+
+		// Use immediate send for sensor data - don't use process.nextTick
 		wss.clients.forEach((client) => {
 			if (client.readyState === 1) {
 				// OPEN
 				try {
+					// Skip buffer/nextTick for real-time data
 					client.send(message);
 				} catch (e) {
-					console.error('Error broadcasting to client:', e);
+					console.error('Error broadcasting sensor data to client:', e);
 				}
 			}
 		});
-	});
+	} else {
+		// For non-sensor data, use the original approach
+		const message = JSON.stringify(data);
+
+		// Use non-blocking for non-critical data
+		process.nextTick(() => {
+			wss.clients.forEach((client) => {
+				if (client.readyState === 1) {
+					// OPEN
+					try {
+						client.send(message);
+					} catch (e) {
+						console.error('Error broadcasting to client:', e);
+					}
+				}
+			});
+		});
+	}
 };

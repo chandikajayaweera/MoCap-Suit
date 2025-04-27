@@ -16,6 +16,7 @@
 	} from '$lib/services/connectionService.js';
 
 	// Stores
+	import * as motionStore from '$lib/stores/motionStore.js';
 	import {
 		connected,
 		connecting,
@@ -36,6 +37,17 @@
 
 	// UI state
 	let showConfiguration = $state(true);
+
+	// Debug store updates
+	$effect(() => {
+		if ($sensorData && Object.keys($sensorData).length > 0) {
+			const sequence = $sensorData?.sequence;
+			// Log occasionally for monitoring
+			if (sequence && sequence % 100 === 0) {
+				console.log(`Page sensor data updated: seq=${sequence}`);
+			}
+		}
+	});
 
 	// Handle connection
 	async function handleConnect() {

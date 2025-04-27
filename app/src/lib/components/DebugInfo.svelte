@@ -2,6 +2,18 @@
 	// Props using the $props rune for Svelte 5
 	let { isStreaming = false, sensorData = {}, dataPacketsReceived = 0 } = $props();
 
+	// Track data updates for debugging
+	$effect(() => {
+		if (isStreaming && sensorData && Object.keys(sensorData).length > 0) {
+			const sensorCount = Object.keys(sensorData).filter((k) => k.startsWith('S')).length;
+			if (sensorCount > 0 && sensorData.sequence !== undefined && sensorData.sequence % 50 === 0) {
+				console.log(
+					`DebugInfo: seq=${sensorData.sequence}, sensors=${sensorCount}, packets=${dataPacketsReceived}`
+				);
+			}
+		}
+	});
+
 	// Format sensor data using standard function instead of derived value
 	function getFormattedData() {
 		// Handle different data structures more robustly
@@ -18,24 +30,13 @@
 		const seq = sensorData.sequence !== undefined ? `SEQ: ${sensorData.sequence}` : '';
 
 		// Count available sensors more reliably
-		const activeSensors = Object.entries(sensorData).filter(
-			([key, value]) => key.startsWith('S') && Array.isArray(value) && value.length === 4
+		const activeSensors = Object.keys(sensorData).filter(
+			(key) => key.startsWith('S') && Array.isArray(sensorData[key]) && sensorData[key].length === 4
 		).length;
 
 		// Build a more comprehensive status message
 		return `${seq} | Active Sensors: ${activeSensors}`;
 	}
-
-	// Log the props when they change for debugging
-	$effect(() => {
-		if (isStreaming && dataPacketsReceived > 0) {
-			// Only log when we're actually streaming and receiving data
-			console.log(
-				'DebugInfo sensor count:',
-				sensorData ? Object.keys(sensorData).filter((k) => k.startsWith('S')).length : 0
-			);
-		}
-	});
 </script>
 
 {#if isStreaming}

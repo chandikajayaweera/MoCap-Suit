@@ -22,7 +22,15 @@ export const isStreaming = derived(
 
 // Action to update sensor data
 export function updateSensorData(newData) {
-	sensorData.set(newData);
+	if (!newData) return;
+
+	// For debugging, occasionally log updates
+	if (newData.sequence && newData.sequence % 50 === 0) {
+		console.log(`Motion store updating with sequence ${newData.sequence}`);
+	}
+
+	// Important: create a new object to trigger reactivity
+	sensorData.set({ ...newData });
 }
 
 // Action to toggle connection
