@@ -15,7 +15,11 @@
 	import { setupScene, cleanupScene } from '$lib/three/engine.js';
 	import { createBasicModel, loadModel } from '$lib/three/models.js';
 	import { applyEnvironment } from '$lib/three/environments.js';
-	import { updateModelWithSensorData, setSkeletonVisibility } from '$lib/three/animation.js';
+	import {
+		updateModelWithSensorData,
+		setSkeletonVisibility,
+		resetModelPose
+	} from '$lib/three/animation.js';
 
 	// Props using Svelte 5 runes syntax
 	let { data, isConnected = false } = $props();
@@ -102,8 +106,34 @@
 
 	// Animate when new sensor data arrives
 	$effect(() => {
-		if (initialized && sceneContext && data?.sensorData) {
-			updateModelWithSensorData(sceneContext, data?.sensorData, currentModelId);
+		if (initialized && sceneContext && data) {
+			// Add detailed debugging to understand the data structure
+			if ($debugMode) {
+				console.log('Received sensor data:', data);
+
+				// Check if we're receiving nested data (common issue)
+				if (data.sensorData) {
+					console.log("Data is nested under 'sensorData' property");
+
+					// If data is nested, we need to use the nested data
+					updateModelWithSensorData(sceneContext, data.sensorData, currentModelId);
+				} else if (typeof data === 'object' && Object.keys(data).some((k) => k.startsWith('S'))) {
+					// Direct sensor data format (S0, S1, etc.)
+					console.log('Direct sensor data format detected');
+					updateModelWithSensorData(sceneContext, data, currentModelId);
+				} else {
+					console.warn('Unrecognized data format:', data);
+					// Try updating with whatever we have anyway
+					updateModelWithSensorData(sceneContext, data, currentModelId);
+				}
+			} else {
+				// When debug is off, try both formats
+				if (data.sensorData) {
+					updateModelWithSensorData(sceneContext, data.sensorData, currentModelId);
+				} else {
+					updateModelWithSensorData(sceneContext, data, currentModelId);
+				}
+			}
 		}
 	});
 
@@ -124,7 +154,41 @@
 
 	// Toggle debug mode
 	function handleDebugToggle() {
-		debugMode.update((value) => !value);
+		// Toggle debug mode
+		const newValue = !$debugMode;
+		debugMode.set(newValue);
+
+		// When enabling debug, immediately output diagnostic information
+		if (newValue && sceneContext && sceneContext.model) {
+			console.log('===== DEBUG MODE ENABLED =====');
+
+			// Log current model info
+			console.log(`Current model: ${currentModelId}`);
+
+			// If we have data, log it
+			if (data) {
+				console.log('Current data:', data);
+
+				// Check for sensor data
+				const sensorKeys = Object.keys(data).filter((k) => k.startsWith('S'));
+				console.log(`Sensor keys found: ${sensorKeys.length}`, sensorKeys);
+
+				// Show a sample of data if available
+				if (sensorKeys.length > 0) {
+					const firstKey = sensorKeys[0];
+					console.log(`Sample sensor data (${firstKey}):`, data[firstKey]);
+				}
+			} else {
+				console.log('No data available');
+			}
+
+			// Force bone structure analysis
+			sceneContext.bonesLogged = false;
+
+			// Reset model pose to see if that helps
+			console.log('Attempting to reset model pose...');
+			resetModelPose(sceneContext);
+		}
 	}
 
 	onMount(() => {

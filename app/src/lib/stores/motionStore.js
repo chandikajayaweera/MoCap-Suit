@@ -16,22 +16,8 @@ export const loading = writable(false);
 
 // Subscription handler to debug mode toggle
 debugMode.subscribe((value) => {
-	// This will run whenever the debug mode is toggled
-	console.log(`Debug mode ${value ? 'enabled' : 'disabled'}`);
-
-	// If we're in browser environment, try to set debug logging on server
-	if (typeof window !== 'undefined' && value !== undefined) {
-		try {
-			fetch('/api/debug', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({ debug: value })
-			}).catch((err) => console.error('Failed to update debug setting:', err));
-		} catch (e) {
-			console.error('Error setting debug mode:', e);
-		}
+	if (typeof window !== 'undefined') {
+		window.__debugModeValue = value;
 	}
 });
 

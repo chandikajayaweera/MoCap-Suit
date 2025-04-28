@@ -90,16 +90,84 @@ export function findMatchingBone(object, bodyPart) {
 }
 
 // Get all sensors with data from the sensor data object
+// In app/src/lib/motion/sensors.js
+// Update the getSensorsWithData function
+
 export function getSensorsWithData(sensorData) {
 	if (!sensorData) return [];
 
-	return Object.entries(sensorData)
-		.filter(([key, value]) => key.startsWith('S') && Array.isArray(value) && value.length === 4)
-		.map(([key, value]) => ({
-			index: parseInt(key.substring(1), 10),
-			data: value,
-			bodyPart: sensorMapping[parseInt(key.substring(1), 10)]
-		}));
+	// Enable debug for troubleshooting
+	let isDebug = true; // Force debug on temporarily to diagnose issues
+
+	// Also check window.__debugModeValue if available
+	try {
+		if (typeof window !== 'undefined' && window.__debugModeValue !== undefined) {
+			isDebug = isDebug || !!window.__debugModeValue;
+		}
+	} catch (_) {
+		// In server environment, keep the default
+	}
+
+	// Handle case where sensorData might be inside a nested structure
+	let actualSensorData = sensorData;
+	if (sensorData.sensorData && typeof sensorData.sensorData === 'object') {
+		actualSensorData = sensorData.sensorData;
+		if (isDebug) console.log('Unwrapped nested sensorData');
+	}
+
+	if (isDebug) {
+		console.log('Processing sensor data:', actualSensorData);
+	}
+
+	// Get all sensor keys (S0, S1, etc.)
+	const sensorKeys = Object.keys(actualSensorData).filter(
+		(key) => key.startsWith('S') && /^S\d+$/.test(key)
+	);
+
+	if (isDebug) {
+		console.log(`Found ${sensorKeys.length} sensor entries in data:`, sensorKeys);
+
+		// Log the actual data structures for diagnosis
+		sensorKeys.forEach((key) => {
+			console.log(`${key} data:`, actualSensorData[key]);
+		});
+	}
+
+	// Filter for valid sensor data and map to structured objects
+	const result = sensorKeys
+		.filter((key) => {
+			const value = actualSensorData[key];
+			const isValid = Array.isArray(value) && value.length === 4;
+
+			if (!isValid && isDebug) {
+				console.warn(`Invalid data format for sensor ${key}:`, value);
+			}
+
+			return isValid;
+		})
+		.map((key) => {
+			const index = parseInt(key.substring(1), 10);
+			const bodyPart = sensorMapping[index];
+
+			if (!bodyPart && isDebug) {
+				console.warn(`No body part mapping found for sensor ${key} (index ${index})`);
+			}
+
+			return {
+				index,
+				data: actualSensorData[key],
+				bodyPart
+			};
+		});
+
+	if (isDebug) {
+		console.log(
+			`Processed ${result.length} valid sensors with mappings:`,
+			result.map((s) => `${s.bodyPart}(${s.index})`)
+		);
+	}
+
+	return result;
 }
 
 // Map sensor data to a model's skeleton

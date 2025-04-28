@@ -171,7 +171,13 @@ export function parseDataMessage(message) {
 			const values = valuesStr.split(',').map((v) => parseFloat(v.trim()));
 
 			if (values.length === 4) {
+				// Store data with S prefix (S0, S1, etc.) to match expected format
 				result[`S${sensorId}`] = values;
+
+				// Enable to force debug log for the first 5 packets
+				if (result.sequence < 5) {
+					console.log(`Parsed sensor S${sensorId} data:`, values);
+				}
 			}
 
 			currentPos = valuesEnd + 1;
@@ -180,6 +186,8 @@ export function parseDataMessage(message) {
 		// Validate we have data before returning
 		const sensorCount = Object.keys(result).filter((k) => k.startsWith('S')).length;
 		if (sensorCount > 0 || result.sequence !== undefined) {
+			// Uncomment for debugging:
+			//console.log(`Parsed ${sensorCount} sensors from data, seq=${result.sequence}`);
 			return result;
 		}
 
