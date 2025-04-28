@@ -11,6 +11,19 @@ let portMonitorInterval = null;
 // Buffer for accumulating partial packets
 let dataBuffer = Buffer.alloc(0);
 
+let debugLogging = false;
+
+/**
+ * Enable or disable debug logging
+ */
+export function setDebugLogging(enabled) {
+	debugLogging = enabled;
+	console.log(`Debug logging ${enabled ? 'enabled' : 'disabled'}`);
+}
+
+// Buffer to collect partial QUAT_ messages
+let quatBuffer = '';
+
 /**
  * Connect to serial port
  */
@@ -169,6 +182,42 @@ function processBuffer() {
 		processedUpTo = nextDataStart;
 	}
 
+	// Handle case where we have QUAT_ or SEQ: without DATA: prefix
+	if (processedUpTo === 0) {
+		// Look for sequence data
+		const seqStart = dataBuffer.indexOf('SEQ:');
+		if (seqStart !== -1) {
+			// Look for end of this packet (newline or next sequence)
+			const nextSeqStart = dataBuffer.indexOf('SEQ:', seqStart + 4);
+
+			if (nextSeqStart !== -1) {
+				// We have a complete packet
+				const packet = dataBuffer.slice(seqStart, nextSeqStart);
+				processSensorDataPacket(packet);
+				processedUpTo = nextSeqStart;
+			}
+		}
+
+		// Look for QUAT_ marker
+		const quatStart = dataBuffer.indexOf('QUAT_');
+		if (quatStart !== -1 && (seqStart === -1 || quatStart < seqStart)) {
+			// Check if it's just a QUAT_ fragment
+			if (quatStart + 5 >= dataBuffer.length || dataBuffer.indexOf('SEQ:', quatStart) === -1) {
+				// Just a QUAT_ fragment, process it and then wait for more
+				const packet = dataBuffer.slice(quatStart, quatStart + 5);
+				processSensorDataPacket(packet);
+				processedUpTo = quatStart + 5;
+			} else {
+				// QUAT_ with SEQ data - find where it ends
+				const nextQuat = dataBuffer.indexOf('QUAT_', quatStart + 5);
+				const endPos = nextQuat !== -1 ? nextQuat : dataBuffer.length;
+				const packet = dataBuffer.slice(quatStart, endPos);
+				processSensorDataPacket(packet);
+				processedUpTo = endPos;
+			}
+		}
+	}
+
 	// Process LOG messages
 	while (true) {
 		const logStart = dataBuffer.indexOf('LOG:', processedUpTo);
@@ -228,16 +277,29 @@ function processSensorDataPacket(packet) {
 		// Skip empty packets
 		if (!data) return;
 
-		// Parse only packets with quaternion data
-		if (data.includes('QUAT_DATA:')) {
-			const cleanData = extractQuatData(data);
+		// Check if this is a partial QUAT_ message
+		if (data === 'QUAT_') {
+			quatBuffer = data;
+			return; // Wait for the rest of the message
+		}
+
+		// If we have a buffered QUAT_ prefix and current packet has SEQ data, combine them
+		let processedData = data;
+		if (quatBuffer === 'QUAT_' && data.startsWith('SEQ:')) {
+			processedData = quatBuffer + data;
+			quatBuffer = ''; // Reset buffer
+		}
+
+		// Parse packets with quaternion data
+		if (processedData.includes('QUAT_DATA:') || processedData.includes('SEQ:')) {
+			const cleanData = extractQuatData(processedData);
 			if (cleanData) {
 				const sensorData = parseSensorData(cleanData);
 				const sensorCount = Object.keys(sensorData).filter((k) => k.startsWith('S')).length;
 
 				if (sensorCount > 0 || sensorData.sequence !== undefined) {
-					// Only log occasionally to reduce console noise
-					if (sensorData.sequence % 25 === 0) {
+					// Only log if debug logging is enabled or it's a milestone sequence
+					if (debugLogging && sensorData.sequence % 25 === 0) {
 						console.log(
 							`Broadcasting sensor data with ${sensorCount} sensors, seq: ${sensorData.sequence}`
 						);
@@ -250,14 +312,22 @@ function processSensorDataPacket(packet) {
 							sensorData: sensorData
 						}
 					});
+
+					// Don't log every sensor packet to reduce system log noise
+					return;
 				}
 			}
-		} else {
-			// If it's not a QUAT_DATA packet, treat as log
-			console.log(`Broadcasting unknown data: ${data.substring(0, 50)}...`);
+		}
+
+		// If it's not sensor data or if data parse failed, treat as log
+		// but only if it's not just noise
+		if (processedData !== 'QUAT_' && !processedData.startsWith('SEQ:')) {
+			if (debugLogging) {
+				console.log(`Broadcasting unknown data: ${processedData.substring(0, 50)}...`);
+			}
 			broadcast({
 				type: 'log',
-				message: data
+				message: processedData
 			});
 		}
 	} catch (error) {
@@ -274,6 +344,12 @@ function extractQuatData(data) {
 	} else if (data.indexOf('QUAT_DATA:') !== -1) {
 		const index = data.indexOf('QUAT_DATA:');
 		return data.substring(index + 'QUAT_DATA:'.length).trim();
+	} else if (data.startsWith('QUAT_SEQ:') || data.includes('SEQ:')) {
+		// Handle the split format or direct SEQ format
+		const seqIndex = data.indexOf('SEQ:');
+		if (seqIndex !== -1) {
+			return data.substring(seqIndex).trim();
+		}
 	}
 	return data; // Try to parse as-is if no prefix found
 }

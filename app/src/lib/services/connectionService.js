@@ -10,7 +10,8 @@ import {
 	setOriginalPort,
 	serialPort,
 	sensorData,
-	lastDataTimestamp
+	lastDataTimestamp,
+	isStreaming
 } from '../stores/connectionStore.js';
 
 import { updateSensorData } from '../stores/motionStore.js';
@@ -65,6 +66,22 @@ export async function connect(port, baudRate = 115200) {
  * Disconnect from serial port
  */
 export async function disconnect() {
+	// Check if streaming is active, send stop command first
+	try {
+		const streamingActive = await isStreamingActive();
+		if (streamingActive) {
+			console.log('Streaming is active, sending stop command before disconnecting');
+			await sendCommand('X');
+
+			// Give a short delay for the stop command to take effect
+			await new Promise((resolve) => setTimeout(resolve, 500));
+		}
+	} catch (error) {
+		console.warn('Error checking streaming status:', error);
+		// Continue with disconnect anyway
+	}
+
+	// Now perform the actual disconnect
 	cleanupWebSocket();
 
 	const response = await fetch('/api/disconnect', { method: 'POST' });
@@ -79,6 +96,21 @@ export async function disconnect() {
 	} else {
 		throw new Error(data.error || 'Disconnect failed');
 	}
+}
+
+/**
+ * Check if streaming is currently active
+ */
+async function isStreamingActive() {
+	let streamingState = false;
+
+	// We'll use a combination of checking the store and a direct API check if needed
+	const unsubscribe = isStreaming.subscribe((value) => {
+		streamingState = value;
+	});
+	unsubscribe();
+
+	return streamingState;
 }
 
 /**

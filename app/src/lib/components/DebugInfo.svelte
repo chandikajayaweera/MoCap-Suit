@@ -1,10 +1,12 @@
 <script>
+	import { debugMode } from '$lib/stores/motionStore.js';
+
 	// Props using the $props rune for Svelte 5
 	let { isStreaming = false, sensorData = {}, dataPacketsReceived = 0 } = $props();
 
 	// Track data updates for debugging
 	$effect(() => {
-		if (isStreaming && sensorData && Object.keys(sensorData).length > 0) {
+		if ($debugMode && isStreaming && sensorData && Object.keys(sensorData).length > 0) {
 			const sensorCount = Object.keys(sensorData).filter((k) => k.startsWith('S')).length;
 			if (sensorCount > 0 && sensorData.sequence !== undefined && sensorData.sequence % 50 === 0) {
 				console.log(
@@ -39,7 +41,7 @@
 	}
 </script>
 
-{#if isStreaming}
+{#if isStreaming && $debugMode}
 	<div class="absolute right-2 top-2 z-10 rounded bg-black/70 p-1.5 font-mono text-xs text-white">
 		<div>Packets: {dataPacketsReceived}</div>
 		<div>{getFormattedData()}</div>

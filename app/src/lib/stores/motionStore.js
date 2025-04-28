@@ -14,6 +14,27 @@ export const debugMode = writable(false);
 // Loading state
 export const loading = writable(false);
 
+// Ssubscription handler to debug mode toggle
+debugMode.subscribe((value) => {
+	// This will run whenever the debug mode is toggled
+	console.log(`Debug mode ${value ? 'enabled' : 'disabled'}`);
+
+	// If we're in browser environment, try to set debug logging on server
+	if (typeof window !== 'undefined' && value !== undefined) {
+		try {
+			fetch('/api/debug', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({ debug: value })
+			}).catch((err) => console.error('Failed to update debug setting:', err));
+		} catch (e) {
+			console.error('Error setting debug mode:', e);
+		}
+	}
+});
+
 // Derived values for UI
 export const isStreaming = derived(
 	[connected, sensorData],
@@ -48,7 +69,11 @@ export function selectEnvironment(envId) {
 }
 
 export function toggleSkeleton() {
-	showSkeleton.update((value) => !value);
+	showSkeleton.update((current) => {
+		const newValue = !current;
+		console.log(`Skeleton visibility ${newValue ? 'enabled' : 'disabled'}`);
+		return newValue;
+	});
 }
 
 export function setLoading(isLoading) {
@@ -57,19 +82,9 @@ export function setLoading(isLoading) {
 
 // Debug helpers
 export function toggleDebug() {
-	debugMode.update((value) => {
-		const newValue = !value;
-
-		// Log current state when debug mode is activated
-		if (newValue) {
-			console.log('Debug mode activated');
-			connected.subscribe((value) => console.log('Connected:', value));
-			selectedModel.subscribe((value) => console.log('Selected model:', value));
-			selectedEnvironment.subscribe((value) => console.log('Selected environment:', value));
-			showSkeleton.subscribe((value) => console.log('Show skeleton:', value));
-			sensorData.subscribe((value) => console.log('Sensor count:', Object.keys(value).length));
-		}
-
+	debugMode.update((current) => {
+		const newValue = !current;
+		console.log(`Debug mode ${newValue ? 'enabled' : 'disabled'}`);
 		return newValue;
 	});
 }
