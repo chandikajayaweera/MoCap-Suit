@@ -7,8 +7,6 @@
 		showSkeleton,
 		debugMode,
 		loading,
-		updateSensorData,
-		setConnected,
 		setLoading
 	} from '$lib/stores/motionStore.js';
 
@@ -22,135 +20,174 @@
 	// Props using Svelte 5 runes syntax
 	let { data, isConnected = false } = $props();
 
-	// Local
+	// Local state
 	let container;
 	let sceneContext = null;
 	let initialized = false;
+	let currentModelId = '';
 
-	// Local state for toggles (to ensure reactivity in Svelte 5)
-	let showSkeletonValue = $state(false);
-	let debugModeValue = $state(false);
+	// Direct DOM event handlers for model and environment changes
+	function handleModelChange(event) {
+		const newModelId = event.target.value;
+		console.log(`Model changed via select: ${newModelId}`);
+		selectedModel.set(newModelId);
+		changeModel(newModelId);
+	}
 
-	// Sync local state with store values initially and when changed
-	$effect(() => {
-		showSkeletonValue = $showSkeleton;
-	});
+	function handleEnvironmentChange(event) {
+		const newEnvId = event.target.value;
+		console.log(`Environment changed via select: ${newEnvId}`);
+		selectedEnvironment.set(newEnvId);
+		changeEnvironment(newEnvId);
+	}
 
-	$effect(() => {
-		debugModeValue = $debugMode;
-	});
+	// Direct model change function
+	async function changeModel(modelId) {
+		if (!sceneContext || !initialized) return;
 
-	// Push incoming props/data into the stores
-	$effect(() => {
-		setConnected(isConnected);
-	});
+		console.log(`Changing model directly to: ${modelId} (current: ${currentModelId})`);
 
-	$effect(() => {
-		if (data?.sensorData) {
-			updateSensorData(data.sensorData);
+		// Skip if same model
+		if (modelId === currentModelId) {
+			console.log('Model unchanged, skipping reload');
+			return;
 		}
-	});
 
-	// Once the scene exists, react to store changes:
-	$effect(() => {
-		if (initialized && sceneContext) {
-			applyEnvironment(sceneContext, $selectedEnvironment);
-			loadModelIntoScene($selectedModel);
+		setLoading(true);
+		try {
+			// First clear previous model
+			if (sceneContext.model) {
+				console.log('Removing previous model');
+				sceneContext.scene.remove(sceneContext.model);
+				sceneContext.model = null;
+			}
+
+			// Clear previous skeleton helper
+			if (sceneContext.skeleton) {
+				console.log('Removing previous skeleton');
+				sceneContext.scene.remove(sceneContext.skeleton);
+				sceneContext.skeleton = null;
+			}
+
+			console.log(`Loading new model: ${modelId}`);
+			if (modelId === 'basic') {
+				await createBasicModel(sceneContext);
+			} else {
+				await loadModel(sceneContext, modelId);
+			}
+
+			currentModelId = modelId;
+			console.log(`Model successfully changed to: ${modelId}`);
+
+			// Update skeleton visibility immediately after loading
+			if (sceneContext.skeleton) {
+				const skeletonVisible = $showSkeleton;
+				console.log(`Setting skeleton visibility to: ${skeletonVisible}`);
+				sceneContext.skeleton.visible = skeletonVisible;
+			}
+		} catch (err) {
+			console.error('Error changing model:', err);
+		} finally {
+			setLoading(false);
 		}
-	});
+	}
+
+	// Direct environment change function
+	function changeEnvironment(envId) {
+		if (!sceneContext || !initialized) return;
+
+		console.log(`Changing environment to: ${envId}`);
+		applyEnvironment(sceneContext, envId);
+	}
 
 	// Animate when new sensor data arrives
 	$effect(() => {
 		if (initialized && sceneContext && data?.sensorData) {
-			updateModelWithSensorData(sceneContext, data.sensorData, $selectedModel);
+			updateModelWithSensorData(sceneContext, data?.sensorData, currentModelId);
 		}
 	});
 
-	// React to skeleton visibility changes
-	$effect(() => {
-		if (sceneContext && sceneContext.skeleton) {
-			setSkeletonVisibility(sceneContext, showSkeletonValue);
-		}
-	});
-
-	// Helper to load a model
-	async function loadModelIntoScene(modelId) {
-		setLoading(true);
-		if (modelId === 'basic') {
-			await createBasicModel(sceneContext);
-		} else {
-			await loadModel(sceneContext, modelId);
-		}
-		setLoading(false);
-	}
-
-	// Toggle handlers with direct store updates
+	// Toggle skeleton visibility with DIRECT update to the skeleton
 	function handleSkeletonToggle() {
-		// Update local state
-		showSkeletonValue = !showSkeletonValue;
+		// Store the new value to ensure consistency
+		const newValue = !$showSkeleton;
 
 		// Update the store
-		showSkeleton.set(showSkeletonValue);
+		showSkeleton.set(newValue);
 
-		console.log(`Show skeleton toggled to: ${showSkeletonValue}`);
-
-		// Update visualization immediately
-		if (sceneContext) {
-			setSkeletonVisibility(sceneContext, showSkeletonValue);
+		// Directly update the skeleton visibility with the same value
+		if (sceneContext && sceneContext.skeleton) {
+			console.log(`Directly setting skeleton visibility to: ${newValue}`);
+			sceneContext.skeleton.visible = newValue;
 		}
 	}
 
+	// Toggle debug mode
 	function handleDebugToggle() {
-		// Update local state
-		debugModeValue = !debugModeValue;
-
-		// Update the store
-		debugMode.set(debugModeValue);
-
-		console.log(`Debug mode toggled to: ${debugModeValue}`);
-
-		// Send debug state to server
-		if (browser) {
-			fetch('/api/debug', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({ debug: debugModeValue })
-			}).catch((err) => console.error('Failed to update debug setting:', err));
-		}
+		debugMode.update((value) => !value);
 	}
 
 	onMount(() => {
 		if (!browser) return;
 
-		let cleanup = () => {};
-
 		(async () => {
 			try {
+				console.log('Setting up 3D scene');
 				sceneContext = await setupScene(container);
 
-				// initial environment & model
-				applyEnvironment(sceneContext, $selectedEnvironment);
-				await loadModelIntoScene($selectedModel);
+				// Configure camera and controls for better movement
+				if (sceneContext.camera) {
+					sceneContext.camera.position.set(0, 100, 200);
+				}
 
-				// Initialize skeleton visibility
+				if (sceneContext.controls) {
+					sceneContext.controls.enableDamping = true;
+					sceneContext.controls.dampingFactor = 0.05;
+					sceneContext.controls.screenSpacePanning = true;
+					sceneContext.controls.minDistance = 50;
+					sceneContext.controls.maxDistance = 500;
+					sceneContext.controls.maxPolarAngle = Math.PI * 0.8;
+					sceneContext.controls.target.set(0, 100, 0);
+				}
+
+				// Initialize with starting model and environment
+				const initialModelId = $selectedModel;
+				const initialEnvId = $selectedEnvironment;
+
+				console.log(`Initial setup with model: ${initialModelId}, env: ${initialEnvId}`);
+				applyEnvironment(sceneContext, initialEnvId);
+
+				setLoading(true);
+				if (initialModelId === 'basic') {
+					await createBasicModel(sceneContext);
+				} else {
+					await loadModel(sceneContext, initialModelId);
+				}
+				currentModelId = initialModelId;
+
+				// Set skeleton visibility based on store value
 				if (sceneContext.skeleton) {
-					setSkeletonVisibility(sceneContext, showSkeletonValue);
+					const skeletonVisible = $showSkeleton;
+					console.log(`Initial skeleton visibility: ${skeletonVisible}`);
+					sceneContext.skeleton.visible = skeletonVisible;
 				}
 
 				initialized = true;
-
-				cleanup = () => {
-					cleanupScene(sceneContext);
-					sceneContext = null;
-				};
+				setLoading(false);
+				console.log('3D scene initialized successfully');
 			} catch (err) {
 				console.error('Error initializing 3D scene:', err);
+				setLoading(false);
 			}
 		})();
 
-		return () => cleanup();
+		return () => {
+			if (sceneContext) {
+				console.log('Cleaning up 3D scene');
+				cleanupScene(sceneContext);
+				sceneContext = null;
+			}
+		};
 	});
 
 	onDestroy(() => {
@@ -161,25 +198,45 @@
 <div class="flex h-full flex-col">
 	<!-- Controls bar -->
 	<div class="mb-2 flex flex-wrap items-center gap-2 bg-gray-100 p-2">
-		<ModelSelector />
-		<EnvironmentSelector />
+		<div>
+			<label for="model-select" class="mr-2 text-sm font-medium">Model:</label>
+			<select
+				id="model-select"
+				value={$selectedModel}
+				onchange={handleModelChange}
+				disabled={$loading}
+				class="rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+			>
+				<option value="basic">Basic Model</option>
+				<option value="xbot">X Bot</option>
+				<option value="amy">Amy (Girl)</option>
+			</select>
+		</div>
+
+		<div>
+			<label for="env-select" class="mr-2 text-sm font-medium">Environment:</label>
+			<select
+				id="env-select"
+				value={$selectedEnvironment}
+				onchange={handleEnvironmentChange}
+				class="rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+			>
+				<option value="studio">Studio</option>
+				<option value="outdoor">Outdoor</option>
+				<option value="dark">Dark Room</option>
+				<option value="grid">Grid Only</option>
+			</select>
+		</div>
 
 		<label class="flex items-center">
-			<input
-				type="checkbox"
-				checked={showSkeletonValue}
-				onclick={handleSkeletonToggle}
-				class="mr-1"
-			/>
+			<input type="checkbox" checked={$showSkeleton} onclick={handleSkeletonToggle} class="mr-1" />
 			Show Skeleton
 		</label>
 
-		{#if import.meta.env.DEV || true}
-			<label class="ml-auto flex items-center">
-				<input type="checkbox" checked={debugModeValue} onclick={handleDebugToggle} class="mr-1" />
-				Debug Mode
-			</label>
-		{/if}
+		<label class="ml-auto flex items-center">
+			<input type="checkbox" checked={$debugMode} onclick={handleDebugToggle} class="mr-1" />
+			Debug Mode
+		</label>
 	</div>
 
 	<!-- Loader overlay -->

@@ -6,7 +6,7 @@ export const connected = writable(false);
 export const sensorData = writable({});
 
 // Visualization settings
-export const selectedModel = writable('basic');
+export const selectedModel = writable('xbot'); // Change from 'basic' to 'xbot'
 export const selectedEnvironment = writable('studio');
 export const showSkeleton = writable(false);
 export const debugMode = writable(false);
@@ -14,7 +14,7 @@ export const debugMode = writable(false);
 // Loading state
 export const loading = writable(false);
 
-// Ssubscription handler to debug mode toggle
+// Subscription handler to debug mode toggle
 debugMode.subscribe((value) => {
 	// This will run whenever the debug mode is toggled
 	console.log(`Debug mode ${value ? 'enabled' : 'disabled'}`);
@@ -61,10 +61,12 @@ export function setConnected(status) {
 
 // Actions for model settings
 export function selectModel(modelId) {
+	console.log(`Setting model to: ${modelId}`);
 	selectedModel.set(modelId);
 }
 
 export function selectEnvironment(envId) {
+	console.log(`Setting environment to: ${envId}`);
 	selectedEnvironment.set(envId);
 }
 

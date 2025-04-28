@@ -3,7 +3,7 @@ import { getTHREE, getGLTFLoader } from './engine.js';
 import * as motionStore from '$lib/stores/motionStore.js';
 
 // Model configuration
-export class ModelManager {
+class ModelManager {
 	constructor() {
 		this.models = [
 			{ id: 'basic', name: 'Basic Model', url: null },
@@ -15,7 +15,8 @@ export class ModelManager {
 			{ id: 'studio', name: 'Studio' },
 			{ id: 'outdoor', name: 'Outdoor' },
 			{ id: 'dark', name: 'Dark Room' },
-			{ id: 'grid', name: 'Grid Only' }
+			{ id: 'grid', name: 'Grid Only' },
+			{ id: 'shadowless', name: 'Shadowless Studio' }
 		];
 	}
 
@@ -33,7 +34,8 @@ export class ModelManager {
 }
 
 // Singleton instance
-export default new ModelManager();
+const modelManager = new ModelManager();
+export default modelManager;
 
 // Constants for basic model
 const LIMB_LENGTH = 40;
@@ -153,15 +155,16 @@ export async function createBasicModel(context) {
 export async function loadModel(context, modelId) {
 	if (!context || !context.scene) return;
 
-	const modelManager = new ModelManager();
+	// Use our singleton modelManager directly
 	const modelData = modelManager.getModelById(modelId);
 
 	if (!modelData || !modelData.url) {
-		console.error('Model not found or missing URL:', modelId);
+		console.log('Model not found or missing URL, creating basic model:', modelId);
 		return createBasicModel(context);
 	}
 
 	motionStore.setLoading(true);
+	console.log(`Loading model: ${modelId} from ${modelData.url}`);
 
 	try {
 		const THREE = await getTHREE();
@@ -188,6 +191,7 @@ export async function loadModel(context, modelId) {
 				(gltf) => {
 					// Store model
 					context.model = gltf.scene;
+					console.log(`Model loaded successfully: ${modelId}`);
 
 					// Log bone structure if debug is enabled
 					if (motionStore.debugMode) {
@@ -235,7 +239,7 @@ export async function loadModel(context, modelId) {
 				(xhr) => {
 					// Progress callback
 					const percent = (xhr.loaded / xhr.total) * 100;
-					motionStore.logDebug(`Loading model: ${Math.round(percent)}%`);
+					console.log(`Loading model: ${Math.round(percent)}%`);
 				},
 				(error) => {
 					console.error('Error loading model:', error);
