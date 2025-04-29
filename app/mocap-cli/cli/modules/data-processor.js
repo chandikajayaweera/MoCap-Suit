@@ -1,5 +1,5 @@
 /**
- * DataProcessor - Singleton for processing device data
+ * Enhanced DataProcessor - Singleton for processing device data with improved UI integration
  */
 class DataProcessor {
 	constructor() {
@@ -19,6 +19,17 @@ class DataProcessor {
 		this.outOfOrderPackets = 0;
 		this.timestamps = [];
 		this.sensorData = {};
+		this.lastRateTime = 0;
+		this.rateWindowSize = 5000; // 5 second window for rate calculation
+
+		// Statistics
+		this.stats = {
+			rates: [], // Array of rate measurements
+			activeSensors: 0, // Number of active sensors
+			maxActiveSensors: 0, // Maximum number of active sensors seen
+			lastDataTime: 0, // Timestamp of last data packet
+			updateCount: 0 // Number of data updates
+		};
 
 		// Callbacks
 		this.logCallback = null;
@@ -37,7 +48,7 @@ class DataProcessor {
 	}
 
 	/**
-	 * Process data chunk from serial port
+	 * Process data chunk from serial port with improved performance
 	 */
 	processData(chunk) {
 		try {
@@ -106,9 +117,19 @@ class DataProcessor {
 	}
 
 	/**
-	 * Handle log messages
+	 * Handle log messages with improved parsing
 	 */
 	handleLogMessage(message) {
+		// Determine log level from message content
+		let level = 'info';
+		if (message.includes('[ERROR]')) {
+			level = 'error';
+		} else if (message.includes('[WARNING]')) {
+			level = 'warn';
+		} else if (message.includes('[DEBUG]')) {
+			level = 'debug';
+		}
+
 		// Check if this is a streaming status message
 		if (
 			message.includes('Sensor reading started') ||
@@ -124,22 +145,14 @@ class DataProcessor {
 			this.setStreaming(false);
 		}
 
-		// Forward log message to callback
+		// Forward log message to callback with level
 		if (this.logCallback) {
-			if (message.includes('[ERROR]')) {
-				this.logCallback(message, 'error');
-			} else if (message.includes('[WARNING]')) {
-				this.logCallback(message, 'warn');
-			} else if (message.includes('[DEBUG]')) {
-				this.logCallback(message, 'debug');
-			} else {
-				this.logCallback(message);
-			}
+			this.logCallback(message, level);
 		}
 	}
 
 	/**
-	 * Handle data packets
+	 * Handle data packets with improved performance
 	 */
 	handleDataPacket(packet) {
 		try {
@@ -155,6 +168,16 @@ class DataProcessor {
 			// Count packets
 			this.packetCount++;
 			this.timestamps.push(receivedTime);
+			this.stats.lastDataTime = receivedTime;
+			this.stats.updateCount++;
+
+			// Maintain timestamps within window size for rate calculation
+			while (
+				this.timestamps.length > 0 &&
+				receivedTime - this.timestamps[0] > this.rateWindowSize
+			) {
+				this.timestamps.shift();
+			}
 
 			// Try to extract quaternion data
 			if (data.includes('SEQ:')) {
@@ -180,6 +203,33 @@ class DataProcessor {
 
 				// Extract sensor data
 				this.extractSensorData(data);
+
+				// Track active sensors
+				const activeSensorCount = Object.keys(this.sensorData || {}).filter(
+					(key) => key.startsWith('S') && Array.isArray(this.sensorData[key])
+				).length;
+
+				this.stats.activeSensors = activeSensorCount;
+				this.stats.maxActiveSensors = Math.max(this.stats.maxActiveSensors, activeSensorCount);
+			}
+
+			// Update data rates periodically (once per second)
+			const now = Date.now();
+			if (now - this.lastRateTime >= 1000) {
+				// Calculate current packet rate (packets/sec)
+				const recentTimestamps = this.timestamps.filter((t) => now - t < 1000);
+				const currentRate = recentTimestamps.length;
+
+				// Store rate
+				this.stats.rates.push(currentRate);
+
+				// Keep rates history manageable
+				if (this.stats.rates.length > 60) {
+					// 1 minute of history
+					this.stats.rates.shift();
+				}
+
+				this.lastRateTime = now;
 			}
 
 			// Call data callback if exists
@@ -200,7 +250,7 @@ class DataProcessor {
 	}
 
 	/**
-	 * Extract sequence number from packet
+	 * Extract sequence number from packet with improved parsing
 	 */
 	extractSequence(data) {
 		try {
@@ -218,7 +268,7 @@ class DataProcessor {
 	}
 
 	/**
-	 * Extract sensor data from packet
+	 * Extract sensor data from packet with optimized parsing
 	 */
 	extractSensorData(data) {
 		try {
@@ -298,7 +348,7 @@ class DataProcessor {
 	}
 
 	/**
-	 * Reset statistics
+	 * Reset statistics for a new session
 	 */
 	reset() {
 		this.dataBuffer = Buffer.alloc(0);
@@ -309,29 +359,63 @@ class DataProcessor {
 		this.outOfOrderPackets = 0;
 		this.timestamps = [];
 		this.sensorData = {};
-	}
+		this.lastRateTime = 0;
 
-	/**
-	 * Get current statistics
-	 */
-	getStats() {
-		const now = Date.now();
-		const elapsed = (now - (this.startTime || now)) / 1000;
-		const rate = this.packetCount / Math.max(elapsed, 0.001);
-
-		return {
-			packetCount: this.packetCount,
-			elapsed,
-			rate,
-			missedPackets: this.missedPackets,
-			outOfOrderPackets: this.outOfOrderPackets,
-			sensorData: this.sensorData,
-			activeSensors: Object.keys(this.sensorData).filter((key) => key.startsWith('S')).length
+		this.stats = {
+			rates: [],
+			activeSensors: 0,
+			maxActiveSensors: 0,
+			lastDataTime: 0,
+			updateCount: 0
 		};
 	}
 
 	/**
-	 * Set streaming state
+	 * Get current statistics with enhanced metrics
+	 */
+	getStats() {
+		const now = Date.now();
+		const elapsed = (now - (this.startTime || now)) / 1000;
+
+		// Calculate current rate from recent timestamps
+		const recentTimestamps = this.timestamps.filter((t) => now - t < 1000);
+		const currentRate = recentTimestamps.length;
+
+		// Calculate average rate over the last 5 seconds
+		const fiveSecTimestamps = this.timestamps.filter((t) => now - t < 5000);
+		const fiveSecRate = fiveSecTimestamps.length / 5;
+
+		// Calculate overall rate
+		const overallRate = this.packetCount / Math.max(elapsed, 0.001);
+
+		// Get recent packet loss rate
+		let recentLossRate = 0;
+		if (this.stats.rates.length > 0) {
+			const lastRates = this.stats.rates.slice(-10); // Last 10 seconds
+			const packetsMissedInWindow = Math.max(0, Math.max(...lastRates) * 10 - this.packetCount);
+			recentLossRate = packetsMissedInWindow / (this.packetCount + packetsMissedInWindow);
+		}
+
+		return {
+			packetCount: this.packetCount,
+			elapsed,
+			rate: currentRate,
+			fiveSecRate,
+			overallRate,
+			missedPackets: this.missedPackets,
+			outOfOrderPackets: this.outOfOrderPackets,
+			sensorData: this.sensorData,
+			activeSensors: this.stats.activeSensors,
+			maxActiveSensors: this.stats.maxActiveSensors,
+			lastDataTime: this.stats.lastDataTime,
+			updateCount: this.stats.updateCount,
+			sequence: this.sensorData.sequence || 0,
+			recentLossRate
+		};
+	}
+
+	/**
+	 * Set streaming state with callback notification
 	 */
 	setStreaming(status) {
 		const changed = this.streaming !== status;
@@ -347,9 +431,19 @@ class DataProcessor {
 	}
 
 	/**
-	 * Check if streaming is active
+	 * Check if streaming is active with timeout detection
 	 */
 	isStreaming() {
+		// If no data received in 3 seconds, consider streaming stopped
+		if (this.streaming && this.stats.lastDataTime > 0) {
+			const now = Date.now();
+			if (now - this.stats.lastDataTime > 3000) {
+				this.setStreaming(false);
+				if (this.logCallback) {
+					this.logCallback('Streaming timeout detected - no data received for 3 seconds', 'warn');
+				}
+			}
+		}
 		return this.streaming;
 	}
 

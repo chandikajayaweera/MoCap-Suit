@@ -6,8 +6,6 @@ import { fileURLToPath } from 'url';
 import chalk from 'chalk';
 import figures from 'figures';
 import { createSpinner } from 'nanospinner';
-import boxen from 'boxen';
-import { select, confirm, input } from '@inquirer/prompts';
 
 // Import modules
 import ConnectionManager from './modules/connection-manager.js';
@@ -28,7 +26,7 @@ if (!fs.existsSync(logsDir)) {
 }
 
 /**
- * Main Application Class
+ * Main Application Class with Terminal UI Dashboard
  */
 class MocapCLI {
 	constructor() {
@@ -39,7 +37,8 @@ class MocapCLI {
 		this.ui = UIManager.getInstance();
 		this.benchmark = BenchmarkManager.getInstance(this.connection, this.logger);
 
-		// Set up shutdown handler
+		// Set up state
+		this.statsUpdateInterval = null;
 		this.setupShutdownHandler();
 	}
 
@@ -47,281 +46,625 @@ class MocapCLI {
 	 * Initialize the application
 	 */
 	async init() {
-		// Set up data processing
-		this.connection.onData((data) => this.dataProcessor.processData(data));
-		this.dataProcessor.onLog((message) => this.logger.log(message));
-		this.dataProcessor.onStreaming((status) => {
-			if (status) this.logger.log('Streaming started', 'success');
-			else this.logger.log('Streaming stopped', 'info');
-		});
-
 		// Show welcome screen
 		await this.ui.showWelcome();
 
-		// Start main menu loop
-		await this.mainMenuLoop();
+		// Initialize the dashboard
+		this.ui.initDashboard();
+
+		// Set up UI event handlers
+		this.setupCommandHandlers();
+
+		// Set up data handling
+		this.setupDataHandling();
+
+		// Set up exit handler
+		this.ui.onExit(() => this.exitApplication());
+
+		// Start status update interval
+		this.startStatusUpdates();
 	}
 
 	/**
-	 * Main menu loop
+	 * Set up data handling
 	 */
-	async mainMenuLoop() {
-		while (true) {
-			this.ui.clear();
-			this.ui.showHeader();
+	setupDataHandling() {
+		// Set up data processing
+		this.connection.onData((data) => this.dataProcessor.processData(data));
 
-			const action = await this.showAppropriateMenu();
+		// Set up log handling
+		this.dataProcessor.onLog((message, level) => {
+			this.ui.log(message, level || 'info');
+		});
 
-			if (action === 'exit') {
-				await this.exitApplication();
-				break;
+		// Set up streaming status changes
+		this.dataProcessor.onStreaming((status) => {
+			this.ui.updateStatus({ streaming: status });
+
+			if (status) {
+				this.ui.log('Streaming started', 'success');
+				this.ui.showNotification('Streaming started', 'success');
+			} else {
+				this.ui.log('Streaming stopped', 'info');
+				this.ui.showNotification('Streaming stopped', 'info');
 			}
+		});
 
-			await this.handleMenuAction(action);
-		}
+		// Set up data updates
+		this.dataProcessor.onData((data) => {
+			if (data && data.sensorData) {
+				const activeSensors = Object.keys(data.sensorData).filter(
+					(key) => key.startsWith('S') && Array.isArray(data.sensorData[key])
+				).length;
+
+				this.ui.updateStatus({
+					packetCount: data.packetCount || 0,
+					activeSensors: activeSensors,
+					missedPackets: data.missedPackets || 0,
+					sequence: data.sensorData.sequence || 0
+				});
+			}
+		});
 	}
 
 	/**
-	 * Show appropriate menu based on connection state
+	 * Set up command handlers for UI
 	 */
-	async showAppropriateMenu() {
-		if (!this.connection.isConnected()) {
-			return await this.ui.showDisconnectedMenu();
-		} else {
-			return await this.ui.showConnectedMenu(
-				this.connection.getPortName(),
-				this.dataProcessor.isStreaming(),
-				this.logger.isDebugMode()
-			);
-		}
-	}
-
-	/**
-	 * Handle menu action
-	 */
-	async handleMenuAction(action) {
-		switch (action) {
-			case 'connect':
+	setupCommandHandlers() {
+		const handlers = {
+			connect: async () => {
 				await this.handleConnect();
-				break;
+			},
+			disconnect: async () => {
+				await this.handleDisconnect();
+			},
+			start_stream: async () => {
+				await this.handleStartStreaming();
+			},
+			stop_stream: async (callback) => {
+				await this.handleStopStreaming();
+				if (callback) callback();
+			},
+			check_sensors: async () => {
+				await this.handleCheckSensors();
+			},
+			init_sensors: async () => {
+				await this.handleInitSensors();
+			},
+			restart_node: async () => {
+				await this.handleRestartNode();
+			},
+			benchmark: async () => {
+				await this.handleBenchmark();
+			},
+			about: () => {
+				this.ui.showAbout();
+			}
+		};
 
-			case 'disconnect':
-				await this.connection.disconnect();
-				break;
-
-			case 'scan':
-				await this.scanPorts();
-				break;
-
-			case 'stream_start':
-				await this.connection.sendCommand('S');
-				break;
-
-			case 'stream_stop':
-				await this.connection.sendCommand('X');
-				break;
-
-			case 'check_sensors':
-				await this.connection.sendCommand('C');
-				break;
-
-			case 'init_sensors':
-				await this.connection.sendCommand('I');
-				break;
-
-			case 'ping':
-				await this.connection.sendCommand('P');
-				break;
-
-			case 'restart_node':
-				if (
-					await confirm({ message: 'Are you sure you want to restart the node?', default: false })
-				) {
-					await this.connection.sendCommand('N');
-				}
-				break;
-
-			case 'restart_receiver':
-				if (
-					await confirm({
-						message: 'Are you sure you want to restart the receiver?',
-						default: false
-					})
-				) {
-					await this.connection.sendCommand('R');
-					await this.connection.disconnect();
-				}
-				break;
-
-			case 'debug_level':
-				const level = await this.ui.showDebugLevelMenu();
-				if (level) await this.connection.sendCommand(level);
-				break;
-
-			case 'toggle_debug':
-				this.logger.toggleDebugMode();
-				this.logger.log(`Debug mode ${this.logger.isDebugMode() ? 'enabled' : 'disabled'}`);
-				break;
-
-			case 'benchmark':
-				await this.runBenchmark();
-				break;
-
-			case 'about':
-				await this.ui.showAbout();
-				break;
-		}
+		this.ui.registerCommandHandlers(handlers);
 	}
 
 	/**
-	 * Handle connection to device
+	 * Start periodic status updates
+	 */
+	startStatusUpdates() {
+		// Clear any existing interval
+		if (this.statsUpdateInterval) {
+			clearInterval(this.statsUpdateInterval);
+		}
+
+		// Update every second
+		this.statsUpdateInterval = setInterval(() => {
+			// Get current stats
+			const stats = this.dataProcessor.getStats();
+
+			// Update UI
+			this.ui.updateStatus({
+				dataRate: stats.rate,
+				packetCount: stats.packetCount,
+				streaming: this.dataProcessor.isStreaming()
+			});
+		}, 1000);
+	}
+
+	/**
+	 * Handle connecting to a device
 	 */
 	async handleConnect() {
-		const portPath = await this.selectPort();
-		if (portPath) {
-			const spinner = createSpinner('Connecting...').start();
-			const success = await this.connection.connect(portPath);
-
-			if (success) {
-				spinner.success({ text: `Connected to ${chalk.green(portPath)}` });
-			} else {
-				spinner.error({ text: `Failed to connect to ${chalk.red(portPath)}` });
-				await this.ui.waitForKey();
-			}
-		}
-	}
-
-	/**
-	 * Scan for available ports
-	 */
-	async scanPorts() {
-		const spinner = createSpinner('Scanning for ports...').start();
+		const hideSpinner = this.ui.showSpinner('Scanning for devices...');
 
 		try {
 			const ports = await SerialPort.list();
 
+			hideSpinner();
+
 			if (ports.length === 0) {
-				spinner.warn({ text: 'No serial ports found' });
-			} else {
-				spinner.success({ text: `Found ${chalk.green(ports.length)} serial ports` });
-
-				console.log(
-					boxen(
-						chalk.cyan.bold('Available Ports') +
-							'\n\n' +
-							ports
-								.map((port) => {
-									const description = port.manufacturer
-										? `${port.manufacturer}${port.serialNumber ? ` (${port.serialNumber})` : ''}`
-										: 'Unknown device';
-									return `${chalk.green(port.path)} - ${chalk.gray(description)}`;
-								})
-								.join('\n'),
-						{
-							padding: 1,
-							margin: 1,
-							borderStyle: 'round'
-						}
-					)
-				);
+				this.ui.showNotification('No devices found', 'warning');
+				this.ui.log('No devices found', 'warning');
+				return;
 			}
 
-			await this.ui.waitForKey();
-			return ports;
+			// Show port selector
+			const portPath = await this.ui.showPortSelector(ports);
+
+			if (portPath) {
+				const connectSpinner = this.ui.showSpinner(`Connecting to ${portPath}...`);
+
+				try {
+					const success = await this.connection.connect(portPath);
+
+					if (success) {
+						connectSpinner('Connected successfully', 'success');
+						this.ui.log(`Connected to ${portPath}`, 'success');
+						this.ui.updateStatus({
+							connected: true,
+							portName: portPath
+						});
+					} else {
+						connectSpinner('Connection failed', 'error');
+						this.ui.log(`Failed to connect to ${portPath}`, 'error');
+					}
+				} catch (error) {
+					connectSpinner(`Connection error: ${error.message}`, 'error');
+					this.ui.log(`Connection error: ${error.message}`, 'error');
+				}
+			}
 		} catch (error) {
-			spinner.error({ text: `Error scanning ports: ${error.message}` });
-			await this.ui.waitForKey();
-			return [];
+			hideSpinner();
+			this.ui.log(`Error scanning ports: ${error.message}`, 'error');
+			this.ui.showNotification(`Error scanning ports: ${error.message}`, 'error');
 		}
 	}
 
 	/**
-	 * Select a port from available ports
+	 * Handle disconnecting from a device
 	 */
-	async selectPort() {
-		const spinner = createSpinner('Scanning for devices...').start();
-		const ports = await SerialPort.list();
-		spinner.stop();
+	async handleDisconnect() {
+		// Check if we're streaming first
+		if (this.dataProcessor.isStreaming()) {
+			this.ui.showDialog(
+				'Streaming Active',
+				'Streaming is active. Do you want to stop streaming before disconnecting?',
+				[
+					{
+						text: 'Yes',
+						callback: async () => {
+							await this.handleStopStreaming();
+							await this.performDisconnect();
+						}
+					},
+					{
+						text: 'No',
+						callback: async () => {
+							await this.performDisconnect();
+						}
+					},
+					{
+						text: 'Cancel',
+						callback: () => {
+							this.ui.screen.render();
+						}
+					}
+				]
+			);
+		} else {
+			await this.performDisconnect();
+		}
+	}
 
-		if (ports.length === 0) {
-			this.logger.log('No devices found', 'warn');
+	/**
+	 * Perform actual disconnection
+	 */
+	async performDisconnect() {
+		const hideSpinner = this.ui.showSpinner('Disconnecting...');
 
-			if (await confirm({ message: 'Would you like to scan again?', default: true })) {
-				return this.selectPort();
+		try {
+			await this.connection.disconnect();
+			hideSpinner('Disconnected successfully', 'success');
+			this.ui.log('Disconnected from device', 'info');
+			this.ui.updateStatus({
+				connected: false,
+				portName: 'None',
+				streaming: false,
+				activeSensors: 0
+			});
+		} catch (error) {
+			hideSpinner(`Disconnect error: ${error.message}`, 'error');
+			this.ui.log(`Disconnect error: ${error.message}`, 'error');
+		}
+	}
+
+	/**
+	 * Handle starting streaming
+	 */
+	async handleStartStreaming() {
+		const hideSpinner = this.ui.showSpinner('Starting data streaming...');
+
+		try {
+			const success = await this.connection.sendCommand('S');
+
+			if (success) {
+				hideSpinner('Streaming started', 'success');
+				// State is updated via callbacks
+			} else {
+				hideSpinner('Failed to start streaming', 'error');
+				this.ui.log('Failed to start streaming', 'error');
+			}
+		} catch (error) {
+			hideSpinner(`Error starting streaming: ${error.message}`, 'error');
+			this.ui.log(`Error starting streaming: ${error.message}`, 'error');
+		}
+	}
+
+	/**
+	 * Handle stopping streaming
+	 */
+	async handleStopStreaming() {
+		const hideSpinner = this.ui.showSpinner('Stopping data streaming...');
+
+		try {
+			const success = await this.connection.sendCommand('X');
+
+			if (success) {
+				hideSpinner('Streaming stopped', 'success');
+				// State is updated via callbacks
+			} else {
+				hideSpinner('Failed to stop streaming', 'error');
+				this.ui.log('Failed to stop streaming', 'error');
+			}
+		} catch (error) {
+			hideSpinner(`Error stopping streaming: ${error.message}`, 'error');
+			this.ui.log(`Error stopping streaming: ${error.message}`, 'error');
+		}
+	}
+
+	/**
+	 * Handle checking sensors
+	 */
+	async handleCheckSensors() {
+		const hideSpinner = this.ui.showSpinner('Checking sensors...');
+
+		try {
+			const success = await this.connection.sendCommand('C');
+
+			if (success) {
+				hideSpinner('Sensor check command sent', 'success');
+				this.ui.log('Sensor check command sent. Check logs for results.', 'info');
+			} else {
+				hideSpinner('Failed to check sensors', 'error');
+				this.ui.log('Failed to check sensors', 'error');
+			}
+		} catch (error) {
+			hideSpinner(`Error checking sensors: ${error.message}`, 'error');
+			this.ui.log(`Error checking sensors: ${error.message}`, 'error');
+		}
+	}
+
+	/**
+	 * Handle initializing sensors
+	 */
+	async handleInitSensors() {
+		const hideSpinner = this.ui.showSpinner('Initializing sensors...');
+
+		try {
+			const success = await this.connection.sendCommand('I');
+
+			if (success) {
+				hideSpinner('Sensor initialization command sent', 'success');
+				this.ui.log('Sensor initialization command sent. This may take a moment...', 'info');
+			} else {
+				hideSpinner('Failed to initialize sensors', 'error');
+				this.ui.log('Failed to initialize sensors', 'error');
+			}
+		} catch (error) {
+			hideSpinner(`Error initializing sensors: ${error.message}`, 'error');
+			this.ui.log(`Error initializing sensors: ${error.message}`, 'error');
+		}
+	}
+
+	/**
+	 * Handle restarting node
+	 */
+	async handleRestartNode() {
+		this.ui.showDialog('Confirm Restart', 'Are you sure you want to restart the node?', [
+			{
+				text: 'Yes',
+				callback: async () => {
+					const hideSpinner = this.ui.showSpinner('Restarting node...');
+
+					try {
+						const success = await this.connection.sendCommand('N');
+
+						if (success) {
+							hideSpinner('Restart command sent', 'success');
+							this.ui.log('Node restart command sent', 'info');
+
+							// Update status
+							this.ui.updateStatus({ streaming: false });
+						} else {
+							hideSpinner('Failed to restart node', 'error');
+							this.ui.log('Failed to restart node', 'error');
+						}
+					} catch (error) {
+						hideSpinner(`Error restarting node: ${error.message}`, 'error');
+						this.ui.log(`Error restarting node: ${error.message}`, 'error');
+					}
+				}
+			},
+			{
+				text: 'No',
+				callback: () => {
+					this.ui.screen.render();
+				}
+			}
+		]);
+	}
+
+	/**
+	 * Handle running benchmark
+	 */
+	async handleBenchmark() {
+		// Show benchmark settings dialog
+		this.ui.showBenchmarkSettings(async (duration) => {
+			if (duration) {
+				const hideSpinner = this.ui.showSpinner(`Preparing benchmark test (${duration}s)...`);
+
+				try {
+					// First stop any active streaming
+					if (this.dataProcessor.isStreaming()) {
+						await this.connection.sendCommand('X');
+						await new Promise((resolve) => setTimeout(resolve, 1000));
+					}
+
+					hideSpinner();
+
+					// Run benchmark
+					const benchmarkResults = await this.runBenchmark(duration);
+
+					// Show results
+					if (benchmarkResults) {
+						this.ui.showBenchmarkResults(benchmarkResults);
+					}
+				} catch (error) {
+					hideSpinner(`Benchmark error: ${error.message}`, 'error');
+					this.ui.log(`Benchmark error: ${error.message}`, 'error');
+				}
+			}
+		});
+	}
+
+	/**
+	 * Run benchmark test with progress updates in UI
+	 */
+	async runBenchmark(duration) {
+		// Create dialog for benchmark progress
+		const progressBox = blessed.box({
+			top: 'center',
+			left: 'center',
+			width: '70%',
+			height: 'shrink',
+			tags: true,
+			border: {
+				type: 'line',
+				fg: 'cyan'
+			},
+			style: {
+				fg: 'white',
+				bg: 'black',
+				border: {
+					fg: 'cyan'
+				}
+			},
+			padding: {
+				top: 1,
+				right: 2,
+				bottom: 1,
+				left: 2
+			}
+		});
+
+		// Add title
+		progressBox.append(
+			blessed.text({
+				top: 0,
+				left: 'center',
+				content: '{bold}{cyan-fg}BENCHMARK IN PROGRESS{/}{/bold}',
+				tags: true
+			})
+		);
+
+		// Add progress bar
+		const progressBar = blessed.progressbar({
+			top: 3,
+			left: 0,
+			width: '100%',
+			height: 1,
+			orientation: 'horizontal',
+			pch: '█',
+			style: {
+				bar: {
+					bg: 'cyan'
+				},
+				bg: 'black'
+			}
+		});
+
+		// Add progress text
+		const progressText = blessed.text({
+			top: 2,
+			left: 'center',
+			content: `0/${duration} seconds (0%)`,
+			tags: true
+		});
+
+		// Add stats text
+		const statsText = blessed.text({
+			top: 5,
+			left: 0,
+			width: '100%',
+			content: 'Starting benchmark...',
+			tags: true
+		});
+
+		progressBox.append(progressBar);
+		progressBox.append(progressText);
+		progressBox.append(statsText);
+
+		// Add to screen
+		this.ui.screen.append(progressBox);
+		this.ui.screen.render();
+
+		try {
+			// Reset processor stats
+			this.dataProcessor.reset();
+
+			// Start streaming
+			await this.connection.sendCommand('S');
+
+			// Wait for streaming to start
+			const streamingStarted = await new Promise((resolve) => {
+				const checkInterval = setInterval(() => {
+					if (this.dataProcessor.isStreaming()) {
+						clearInterval(checkInterval);
+						resolve(true);
+					}
+				}, 100);
+
+				// Timeout after 5 seconds
+				setTimeout(() => {
+					clearInterval(checkInterval);
+					resolve(false);
+				}, 5000);
+			});
+
+			if (!streamingStarted) {
+				throw new Error('Streaming failed to start for benchmark');
 			}
 
-			return null;
-		}
+			// Set starting time
+			const startTime = Date.now();
+			let lastUpdateTime = startTime;
 
-		// Prepare port choices with better formatting
-		const choices = ports.map((port) => {
-			const description = port.manufacturer
-				? `${port.manufacturer}${port.serialNumber ? ` (${port.serialNumber})` : ''}`
-				: 'Unknown device';
+			// Set up progress updates
+			const rateData = [];
 
-			return {
-				name: `${port.path} - ${description}`,
-				value: port.path,
-				description
+			const updateInterval = setInterval(() => {
+				// Calculate elapsed time
+				const now = Date.now();
+				const elapsed = Math.floor((now - startTime) / 1000);
+				const remainingTime = Math.max(0, duration - elapsed);
+
+				// Calculate progress
+				const progressPct = Math.min(100, Math.floor((elapsed / duration) * 100));
+
+				// Get current stats
+				const stats = this.dataProcessor.getStats();
+				rateData.push(stats.rate);
+
+				// Update progress display
+				progressBar.setProgress(progressPct);
+				progressText.setContent(`${elapsed}/${duration} seconds (${progressPct}%)`);
+
+				// Update stats text
+				statsText.setContent(
+					`{bold}Packets:{/bold} ${stats.packetCount.toLocaleString()}   ` +
+						`{bold}Rate:{/bold} ${stats.rate.toFixed(1)} packets/sec\n` +
+						`{bold}Missing:{/bold} ${stats.missedPackets}   ` +
+						`{bold}Active Sensors:{/bold} ${stats.activeSensors}`
+				);
+
+				// Render updates
+				this.ui.screen.render();
+
+				// Stop if duration reached
+				if (elapsed >= duration) {
+					clearInterval(updateInterval);
+				}
+
+				// Save last update time
+				lastUpdateTime = now;
+			}, 1000);
+
+			// Wait for the benchmark to complete
+			await new Promise((resolve) => setTimeout(resolve, duration * 1000 + 500));
+
+			// Make sure the interval is stopped
+			clearInterval(updateInterval);
+
+			// Stop streaming
+			await this.connection.sendCommand('X');
+
+			// Get final stats
+			const endTime = Date.now();
+			const stats = this.dataProcessor.getStats();
+
+			// Compile results
+			const benchmarkResults = {
+				duration: (endTime - startTime) / 1000,
+				totalPackets: stats.packetCount,
+				overallRate: stats.rate,
+				minRate: Math.min(...rateData) || 0,
+				maxRate: Math.max(...rateData) || 0,
+				avgRate: rateData.reduce((sum, rate) => sum + rate, 0) / (rateData.length || 1),
+				missedPackets: stats.missedPackets,
+				outOfOrder: stats.outOfOrderPackets,
+				lossRate:
+					stats.packetCount > 0
+						? (stats.missedPackets / (stats.packetCount + stats.missedPackets)) * 100
+						: 0,
+				logFile: 'benchmark_results.log'
 			};
-		});
 
-		console.log('\n' + chalk.bold.blue(' Available Devices ') + '\n');
+			// Clean up UI
+			progressBox.detach();
+			this.ui.screen.render();
 
-		const portPath = await select({
-			message: 'Select a device to connect:',
-			choices: [
-				...choices,
-				{ name: 'Scan again', value: 'scan' },
-				{ name: 'Cancel', value: 'cancel' }
-			]
-		});
-
-		if (portPath === 'scan') {
-			return this.selectPort();
-		} else if (portPath === 'cancel') {
-			return null;
-		}
-
-		return portPath;
-	}
-
-	/**
-	 * Run benchmark
-	 */
-	async runBenchmark() {
-		if (!this.connection.isConnected()) {
-			this.logger.log('Cannot run benchmark: Not connected', 'error');
-			await this.ui.waitForKey();
-			return;
-		}
-
-		const duration = await input({
-			message: 'Benchmark duration (seconds):',
-			default: '30',
-			validate: (value) => {
-				const num = parseInt(value);
-				return !isNaN(num) && num > 0 ? true : 'Please enter a positive number';
-			}
-		});
-
-		if (await confirm({ message: `Start benchmark for ${duration} seconds?`, default: true })) {
-			await this.benchmark.run(parseInt(duration));
-			await this.ui.waitForKey();
+			return benchmarkResults;
+		} catch (error) {
+			progressBox.detach();
+			this.ui.screen.render();
+			throw error;
 		}
 	}
 
 	/**
-	 * Exit application
+	 * Exit the application
 	 */
 	async exitApplication() {
+		// Clear any intervals
+		if (this.statsUpdateInterval) {
+			clearInterval(this.statsUpdateInterval);
+		}
+
+		// Disconnect if connected
 		if (this.connection.isConnected()) {
-			if (await confirm({ message: 'Disconnect before exiting?', default: true })) {
+			// Stop streaming if active
+			if (this.dataProcessor.isStreaming()) {
+				try {
+					await this.connection.sendCommand('X');
+					await new Promise((resolve) => setTimeout(resolve, 500));
+				} catch (e) {
+					// Ignore errors during shutdown
+				}
+			}
+
+			try {
 				await this.connection.disconnect();
+			} catch (e) {
+				// Ignore errors during shutdown
 			}
 		}
 
-		this.ui.showGoodbye();
+		// Clean up UI
+		this.ui.destroy();
+
+		// Show goodbye message
+		console.clear();
+		console.log(chalk.green(figlet.textSync('Thank You!', { font: 'Standard' })));
+		console.log(chalk.cyan('Motion Capture CLI Tool closed successfully.'));
+
+		// Exit process
 		process.exit(0);
 	}
 
@@ -329,48 +672,39 @@ class MocapCLI {
 	 * Set up shutdown handler
 	 */
 	setupShutdownHandler() {
+		// Ensure process.stdin is properly reset on exit
 		const cleanup = async () => {
-			console.log('\n');
-			this.logger.log('Shutting down...', 'warn');
-
-			// Ensure process.stdin is properly reset
 			if (process.stdin.isTTY) {
-				try {
-					process.stdin.setRawMode(false);
-				} catch (e) {
-					// Ignore errors during shutdown
-				}
+				process.stdin.setRawMode(false);
 			}
 			process.stdin.pause();
 
-			// Add a small delay before starting to ensure stdin state is clean
-			setTimeout(() => {
-				try {
-					const app = new MocapCLI();
-					app.init();
-				} catch (error) {
-					console.error(`\n${chalk.red(figures.cross)} Fatal error: ${error.message}`);
-					process.exit(1);
-				}
-			}, 50);
-
-			// Close any readline interfaces that might be open
-			if (global.rlInterface && typeof global.rlInterface.close === 'function') {
-				global.rlInterface.close();
+			// Clear any intervals
+			if (this.statsUpdateInterval) {
+				clearInterval(this.statsUpdateInterval);
 			}
 
+			// Clean up connection
 			if (this.connection.isConnected()) {
 				await this.connection.disconnect();
+			}
+
+			// Destroy UI
+			if (this.ui) {
+				this.ui.destroy();
 			}
 
 			process.exit(0);
 		};
 
-		// Handle Ctrl+C and other termination signals
+		// Handle termination signals
 		process.on('SIGINT', cleanup);
 		process.on('SIGTERM', cleanup);
 	}
 }
+
+// Import these here to avoid circular dependencies
+import blessed from 'blessed';
 
 // Run application
 try {
