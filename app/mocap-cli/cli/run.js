@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 
 /**
- * Smart Benchmark Runner Script
+ * Motion Capture CLI Tool Runner
  *
  * This wrapper script:
  * 1. Checks if dependencies are installed
  * 2. If not, asks user for permission to install them
- * 3. Offers choice of package manager (npm or pnpm)
+ * 3. Offers choice of package manager (npm, pnpm, or yarn)
  * 4. Installs dependencies if needed
- * 5. Runs the benchmark tool
+ * 5. Runs the Motion Capture CLI tool
  */
 
 import fs from 'fs';
@@ -21,29 +21,36 @@ import readline from 'readline';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Path to benchmark tool
-const BENCHMARK_DIR = __dirname;
-const BENCHMARK_SCRIPT = path.join(BENCHMARK_DIR, 'index.js');
-const NODE_MODULES_PATH = path.join(BENCHMARK_DIR, 'node_modules');
+// Path to CLI tool
+const CLI_DIR = __dirname;
+const CLI_SCRIPT = path.join(CLI_DIR, 'index.js');
+const NODE_MODULES_PATH = path.join(CLI_DIR, 'node_modules');
 
 // Create logs directory if it doesn't exist
-const logsDir = path.join(BENCHMARK_DIR, '..', 'logs');
+const logsDir = path.join(CLI_DIR, '..', 'logs');
 if (!fs.existsSync(logsDir)) {
 	fs.mkdirSync(logsDir, { recursive: true });
 }
 
 // Create interactive readline interface
-const rl = readline.createInterface({
+global.rlInterface = readline.createInterface({
 	input: process.stdin,
 	output: process.stdout
 });
 
 // Promisify readline question
-const question = (query) => new Promise((resolve) => rl.question(query, resolve));
+const question = (query) =>
+	new Promise((resolve) => {
+		// Ensure stdin is in the correct state for readline
+		if (process.stdin.isTTY && process.stdin.isRaw) {
+			process.stdin.setRawMode(false);
+		}
 
-/**
- * Checks if dependencies are installed
- */
+		global.rlInterface.question(query, (answer) => {
+			resolve(answer);
+		});
+	});
+
 /**
  * Checks if essential dependencies are installed
  */
@@ -66,7 +73,9 @@ function checkDependenciesInstalled() {
 		'inquirer',
 		'log-update',
 		'nanospinner',
-		'serialport'
+		'serialport',
+		'blessed',
+		'blessed-contrib'
 		// Add any other direct dependencies of index.js here
 	];
 
@@ -143,7 +152,7 @@ async function installDependencies(packageManager) {
 
 		return new Promise((resolve, reject) => {
 			const installProcess = spawn(command, args, {
-				cwd: BENCHMARK_DIR,
+				cwd: CLI_DIR,
 				stdio: 'inherit', // Show output in console
 				shell: isWindows // Use shell on Windows for better compatibility
 			});
@@ -176,24 +185,40 @@ async function installDependencies(packageManager) {
 }
 
 /**
- * Runs the benchmark tool
+ * Runs the Motion Capture CLI
  */
-function runBenchmark() {
+function runCliTool() {
 	return new Promise((resolve, reject) => {
 		const isWindows = process.platform === 'win32';
 
-		const benchProcess = spawn('node', [BENCHMARK_SCRIPT], {
-			stdio: 'inherit', // Show output in console
-			shell: isWindows // Use shell on Windows for better compatibility
-		});
+		// Reset stdin state before spawning child process
+		if (process.stdin.isTTY) {
+			process.stdin.setRawMode(false);
+		}
+		process.stdin.pause();
 
-		benchProcess.on('close', (code) => {
-			resolve(code);
-		});
+		// Close readline interface to ensure clean handoff
+		if (global.rlInterface) {
+			global.rlInterface.close();
+		}
 
-		benchProcess.on('error', (err) => {
-			reject(new Error(`Failed to start benchmark: ${err.message}`));
-		});
+		// Wait a moment for I/O streams to reset
+		setTimeout(() => {
+			// Create a detached process with separate stdio
+			const cliProcess = spawn('node', [CLI_SCRIPT], {
+				stdio: 'inherit', // Show output in console
+				shell: isWindows, // Use shell on Windows for better compatibility
+				detached: false // Keep it attached to parent's lifetime
+			});
+
+			cliProcess.on('close', (code) => {
+				resolve(code);
+			});
+
+			cliProcess.on('error', (err) => {
+				reject(new Error(`Failed to start CLI tool: ${err.message}`));
+			});
+		}, 100); // Small delay to ensure cleanup completes
 	});
 }
 
@@ -272,17 +297,17 @@ async function selectPackageManager(availableManagers) {
 async function main() {
 	try {
 		// Verify files and directories
-		console.log(`Current directory: ${BENCHMARK_DIR}`);
+		console.log(`Current directory: ${CLI_DIR}`);
 
-		// Check if benchmark script exists
-		if (!fs.existsSync(BENCHMARK_SCRIPT)) {
-			console.error(`Error: Benchmark script not found at ${BENCHMARK_SCRIPT}`);
+		// Check if CLI script exists
+		if (!fs.existsSync(CLI_SCRIPT)) {
+			console.error(`Error: CLI script not found at ${CLI_SCRIPT}`);
 			console.error('Please make sure all required files are in place.');
 			process.exit(1);
 		}
 
 		// Check if package.json exists for installation
-		const packageJsonPath = path.join(BENCHMARK_DIR, 'package.json');
+		const packageJsonPath = path.join(CLI_DIR, 'package.json');
 		if (!fs.existsSync(packageJsonPath)) {
 			console.error(`Error: package.json not found at ${packageJsonPath}`);
 			console.error('Cannot install dependencies without package.json');
@@ -293,7 +318,7 @@ async function main() {
 		const dependenciesInstalled = checkDependenciesInstalled();
 
 		if (!dependenciesInstalled) {
-			console.log('Motion Capture Benchmark Tool dependencies are not installed.');
+			console.log('Motion Capture CLI Tool dependencies are not installed.');
 
 			const installAnswer = await question('Would you like to install them now? (y/n): ');
 
@@ -307,19 +332,21 @@ async function main() {
 				// Install dependencies
 				await installDependencies(packageManager);
 			} else {
-				console.log('Dependencies are required to run the benchmark tool.');
+				console.log('Dependencies are required to run the CLI tool.');
 				process.exit(1);
 			}
 		}
 
-		// Run the benchmark
-		const exitCode = await runBenchmark();
+		// Run the CLI tool
+		const exitCode = await runCliTool();
 		process.exit(exitCode);
 	} catch (error) {
 		console.error(`Error: ${error.message}`);
 		process.exit(1);
 	} finally {
-		rl.close();
+		if (global.rlInterface) {
+			global.rlInterface.close();
+		}
 	}
 }
 

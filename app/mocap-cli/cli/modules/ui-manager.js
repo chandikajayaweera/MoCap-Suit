@@ -4,6 +4,7 @@ import chalkAnimation from 'chalk-animation';
 import boxen from 'boxen';
 import { select } from '@inquirer/prompts';
 import figures from 'figures';
+import readline from 'readline';
 
 /**
  * UIManager - Singleton for managing UI elements
@@ -17,6 +18,55 @@ class UIManager {
 		UIManager.instance = this;
 		this.APP_VERSION = '1.0.0';
 		this.APP_NAME = 'MoCap CLI';
+	}
+
+	/**
+	 * Clear screen
+	 */
+	clear() {
+		console.clear();
+	}
+
+	/**
+	 * Wait for key press with safe stdin handling
+	 */
+	async waitForKey(message = 'Press any key to continue...') {
+		console.log(`\n ${chalk.dim(message)}`);
+
+		// Save current stdin state
+		const wasRaw = process.stdin.isRaw || false;
+		const wasResumed = process.stdin.isPaused() === false;
+
+		// Only set raw mode if not already in raw mode
+		if (!wasRaw) {
+			process.stdin.setRawMode(true);
+		}
+
+		// Only resume if paused
+		if (!wasResumed) {
+			process.stdin.resume();
+		}
+
+		return new Promise((resolve) => {
+			// Use 'once' to ensure the listener is removed after execution
+			const keypressHandler = (data) => {
+				// Restore original state
+				if (!wasRaw) {
+					process.stdin.setRawMode(false);
+				}
+
+				if (!wasResumed) {
+					process.stdin.pause();
+				}
+
+				// Remove the event listener to avoid duplicates
+				process.stdin.removeListener('data', keypressHandler);
+
+				resolve();
+			};
+
+			process.stdin.once('data', keypressHandler);
+		});
 	}
 
 	/**
@@ -287,15 +337,39 @@ class UIManager {
 	async waitForKey(message = 'Press any key to continue...') {
 		console.log(`\n ${chalk.dim(message)}`);
 
-		process.stdin.setRawMode(true);
-		process.stdin.resume();
+		// Save current stdin state
+		const wasRaw = process.stdin.isRaw || false;
+		const wasResumed = process.stdin.isPaused() === false;
+
+		// Only set raw mode if not already in raw mode
+		if (!wasRaw) {
+			process.stdin.setRawMode(true);
+		}
+
+		// Only resume if paused
+		if (!wasResumed) {
+			process.stdin.resume();
+		}
 
 		return new Promise((resolve) => {
-			process.stdin.once('data', () => {
-				process.stdin.setRawMode(false);
-				process.stdin.pause();
+			// Use 'once' to ensure the listener is removed after execution
+			const keypressHandler = (data) => {
+				// Restore original state
+				if (!wasRaw) {
+					process.stdin.setRawMode(false);
+				}
+
+				if (!wasResumed) {
+					process.stdin.pause();
+				}
+
+				// Remove the event listener to avoid duplicates
+				process.stdin.removeListener('data', keypressHandler);
+
 				resolve();
-			});
+			};
+
+			process.stdin.once('data', keypressHandler);
 		});
 	}
 }

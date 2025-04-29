@@ -333,6 +333,32 @@ class MocapCLI {
 			console.log('\n');
 			this.logger.log('Shutting down...', 'warn');
 
+			// Ensure process.stdin is properly reset
+			if (process.stdin.isTTY) {
+				try {
+					process.stdin.setRawMode(false);
+				} catch (e) {
+					// Ignore errors during shutdown
+				}
+			}
+			process.stdin.pause();
+
+			// Add a small delay before starting to ensure stdin state is clean
+			setTimeout(() => {
+				try {
+					const app = new MocapCLI();
+					app.init();
+				} catch (error) {
+					console.error(`\n${chalk.red(figures.cross)} Fatal error: ${error.message}`);
+					process.exit(1);
+				}
+			}, 50);
+
+			// Close any readline interfaces that might be open
+			if (global.rlInterface && typeof global.rlInterface.close === 'function') {
+				global.rlInterface.close();
+			}
+
 			if (this.connection.isConnected()) {
 				await this.connection.disconnect();
 			}
