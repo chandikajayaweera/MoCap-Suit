@@ -13,7 +13,7 @@
 		"format": "prettier --write .",
 		"lint": "prettier --check . && eslint .",
 		"start": "node server.js",
-		"bench": "node testing/mocap-bench/run.js"
+		"cli": "node mocap-cli/cli/run.js"
 	},
 	"devDependencies": {
 		"@eslint/compat": "^1.2.5",

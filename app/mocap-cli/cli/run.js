@@ -56,12 +56,17 @@ function checkDependenciesInstalled() {
 
 	// List essential packages imported by index.js
 	const essentialPackages = [
-		'serialport',
-		'log-update',
-		'inquirer',
+		'@inquirer/prompts',
+		'boxen',
 		'chalk',
-		'ora',
-		'boxen'
+		'chalk-animation',
+		'cli-cursor',
+		'figlet',
+		'figures',
+		'inquirer',
+		'log-update',
+		'nanospinner',
+		'serialport'
 		// Add any other direct dependencies of index.js here
 	];
 
