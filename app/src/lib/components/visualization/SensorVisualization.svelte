@@ -18,12 +18,8 @@
 	import {
 		updateModelWithSensorData,
 		setSkeletonVisibility,
-		resetModelPose,
-		exposeModelInfo
+		resetModelPose
 	} from '$lib/three/animation.js';
-
-	import { getTHREE } from '$lib/three/engine.js';
-	import { getSensorsWithData } from '$lib/motion/sensors.js';
 
 	// Props using Svelte 5 runes syntax
 	let { data, isConnected = false } = $props();
@@ -33,29 +29,6 @@
 	let sceneContext = null;
 	let initialized = false;
 	let currentModelId = '';
-	// FIX: Track last update to avoid overly frequent updates
-	let lastUpdateTime = 0;
-	let updateDebounce = 16; // ~60fps max update rate
-
-	// Add error state tracking
-	let hasError = $state(false);
-	let errorMessage = $state('');
-
-	const directBoneMappings = {
-		S0: ['mixamorig:RightLeg', 'mixamorig.RightLeg', 'RightLeg', 'mixamorig3:RightLeg'],
-		S1: ['mixamorig:RightUpLeg', 'mixamorig.RightUpLeg', 'RightUpLeg', 'mixamorig3:RightUpLeg'],
-		S2: ['mixamorig:LeftLeg', 'mixamorig.LeftLeg', 'LeftLeg', 'mixamorig3:LeftLeg'],
-		S3: ['mixamorig:LeftUpLeg', 'mixamorig.LeftUpLeg', 'LeftUpLeg', 'mixamorig3:LeftUpLeg'],
-		S4: ['mixamorig:LeftForeArm', 'mixamorig.LeftForeArm', 'LeftForeArm', 'mixamorig3:LeftForeArm'],
-		S5: ['mixamorig:LeftArm', 'mixamorig.LeftArm', 'LeftArm', 'mixamorig3:LeftArm'],
-		S6: [
-			'mixamorig:RightForeArm',
-			'mixamorig.RightForeArm',
-			'RightForeArm',
-			'mixamorig3:RightForeArm'
-		],
-		S7: ['mixamorig:RightArm', 'mixamorig.RightArm', 'RightArm', 'mixamorig3:RightArm']
-	};
 
 	// Direct DOM event handlers for model and environment changes
 	function handleModelChange(event) {
@@ -86,10 +59,6 @@
 
 		setLoading(true);
 		try {
-			// Clear error state on model change
-			hasError = false;
-			errorMessage = '';
-
 			// First clear previous model
 			if (sceneContext.model) {
 				console.log('Removing previous model');
@@ -122,8 +91,6 @@
 			}
 		} catch (err) {
 			console.error('Error changing model:', err);
-			hasError = true;
-			errorMessage = `Failed to load model: ${err.message || 'Unknown error'}`;
 		} finally {
 			setLoading(false);
 		}
@@ -137,41 +104,37 @@
 		applyEnvironment(sceneContext, envId);
 	}
 
+	// Animate when new sensor data arrives
 	$effect(() => {
-		console.log(
-			'DATA:',
-			Object.keys(data).filter((k) => k.startsWith('S'))
-		);
-		console.log('BONE SEARCH:', window.__bones); // The bone names from your model
-		if (!initialized || !sceneContext || !data || !isConnected) return;
+		if (initialized && sceneContext && data) {
+			// Add detailed debugging to understand the data structure
+			if ($debugMode) {
+				console.log('Received sensor data:', data);
 
-		if (!data) return;
+				// Check if we're receiving nested data (common issue)
+				if (data.sensorData) {
+					console.log("Data is nested under 'sensorData' property");
 
-		// Direct bone manipulation based on sensor data
-		Object.keys(data).forEach((key) => {
-			if (!key.startsWith('S') || !Array.isArray(data[key]) || data[key].length !== 4) return;
-
-			const possibleBoneNames = directBoneMappings[key] || [];
-			const [w, x, y, z] = data[key];
-
-			// Try each possible bone name
-			let found = false;
-			for (const boneName of possibleBoneNames) {
-				const bone = sceneContext.model.getObjectByName(boneName);
-				if (bone) {
-					bone.quaternion.set(x, y, z, w);
-					bone.quaternion.normalize();
-					bone.updateMatrix();
-					bone.updateMatrixWorld(true);
-					found = true;
-					break;
+					// If data is nested, we need to use the nested data
+					updateModelWithSensorData(sceneContext, data.sensorData, currentModelId);
+				} else if (typeof data === 'object' && Object.keys(data).some((k) => k.startsWith('S'))) {
+					// Direct sensor data format (S0, S1, etc.)
+					console.log('Direct sensor data format detected');
+					updateModelWithSensorData(sceneContext, data, currentModelId);
+				} else {
+					console.warn('Unrecognized data format:', data);
+					// Try updating with whatever we have anyway
+					updateModelWithSensorData(sceneContext, data, currentModelId);
+				}
+			} else {
+				// When debug is off, try both formats
+				if (data.sensorData) {
+					updateModelWithSensorData(sceneContext, data.sensorData, currentModelId);
+				} else {
+					updateModelWithSensorData(sceneContext, data, currentModelId);
 				}
 			}
-
-			if ($debugMode && !found && data.sequence % 50 === 0) {
-				console.log(`No matching bone found for sensor ${key}`);
-			}
-		});
+		}
 	});
 
 	// Toggle skeleton visibility with DIRECT update to the skeleton
@@ -191,21 +154,44 @@
 
 	// Toggle debug mode
 	function handleDebugToggle() {
+		// Toggle debug mode
 		const newValue = !$debugMode;
 		debugMode.set(newValue);
 
-		if (newValue) {
-			console.log('Debug mode enabled - additional logging will be shown');
-		} else {
-			console.log('Debug mode disabled');
+		// When enabling debug, immediately output diagnostic information
+		if (newValue && sceneContext && sceneContext.model) {
+			console.log('===== DEBUG MODE ENABLED =====');
+
+			// Log current model info
+			console.log(`Current model: ${currentModelId}`);
+
+			// If we have data, log it
+			if (data) {
+				console.log('Current data:', data);
+
+				// Check for sensor data
+				const sensorKeys = Object.keys(data).filter((k) => k.startsWith('S'));
+				console.log(`Sensor keys found: ${sensorKeys.length}`, sensorKeys);
+
+				// Show a sample of data if available
+				if (sensorKeys.length > 0) {
+					const firstKey = sensorKeys[0];
+					console.log(`Sample sensor data (${firstKey}):`, data[firstKey]);
+				}
+			} else {
+				console.log('No data available');
+			}
+
+			// Force bone structure analysis
+			sceneContext.bonesLogged = false;
+
+			// Reset model pose to see if that helps
+			console.log('Attempting to reset model pose...');
+			resetModelPose(sceneContext);
 		}
 	}
 
 	onMount(() => {
-		if (sceneContext && sceneContext.model) {
-			// Expose model info for debugging
-			exposeModelInfo(sceneContext);
-		}
 		if (!browser) return;
 
 		(async () => {
@@ -256,8 +242,6 @@
 			} catch (err) {
 				console.error('Error initializing 3D scene:', err);
 				setLoading(false);
-				hasError = true;
-				errorMessage = `Failed to initialize scene: ${err.message || 'Unknown error'}`;
 			}
 		})();
 
@@ -269,48 +253,11 @@
 			}
 		};
 	});
-	/*
-	setTimeout(() => {
-		console.log('DIRECT MODEL INSPECTION');
-		if (sceneContext && sceneContext.model) {
-			// Log all bones
-			const bones = [];
-			sceneContext.model.traverse((obj) => {
-				if (obj.type === 'Bone' || obj.isBone) {
-					bones.push(obj.name);
-
-					// FORCE MOVEMENT to test if bone control works at all
-					obj.rotation.x = (Math.random() * Math.PI) / 4;
-					obj.updateMatrix();
-					obj.updateMatrixWorld(true);
-				}
-			});
-			console.log('ALL MODEL BONES:', bones);
-
-			// Make model info globally accessible
-			window.__modelBones = bones;
-		}
-	}, 2000); // Delay to ensure model is loaded*/
-
-	// Add to onMount
-	setTimeout(() => {
-		console.log('EXACT BONE NAMES:');
-		const allBones = [];
-		sceneContext.model.traverse((obj) => {
-			if (obj.isBone || obj.type === 'Bone') {
-				allBones.push(obj.name);
-			}
-		});
-		console.log(allBones);
-		window.__bones = allBones; // Access in console
-	}, 2000);
 
 	onDestroy(() => {
 		if (sceneContext) cleanupScene(sceneContext);
 	});
 </script>
-
-# SensorVisualization.svelte
 
 <div class="flex h-full flex-col">
 	<!-- Controls bar -->
@@ -342,7 +289,6 @@
 				<option value="outdoor">Outdoor</option>
 				<option value="dark">Dark Room</option>
 				<option value="grid">Grid Only</option>
-				<option value="shadowless">Shadowless Studio</option>
 			</select>
 		</div>
 
@@ -362,25 +308,6 @@
 		<div class="absolute inset-0 z-10 flex items-center justify-center bg-black bg-opacity-30">
 			<div class="rounded bg-white p-4 shadow-lg">
 				<p class="text-lg">Loading model…</p>
-			</div>
-		</div>
-	{/if}
-
-	<!-- Error state -->
-	{#if hasError}
-		<div class="absolute inset-0 z-10 flex items-center justify-center bg-red-100 bg-opacity-30">
-			<div class="rounded bg-white p-4 text-center shadow-lg">
-				<h3 class="mb-2 text-lg font-medium text-red-800">Visualization Error</h3>
-				<p class="text-red-600">{errorMessage}</p>
-				<button
-					onclick={() => {
-						hasError = false;
-						errorMessage = '';
-					}}
-					class="mt-2 rounded bg-red-600 px-3 py-1 text-sm text-white hover:bg-red-700"
-				>
-					Dismiss
-				</button>
 			</div>
 		</div>
 	{/if}

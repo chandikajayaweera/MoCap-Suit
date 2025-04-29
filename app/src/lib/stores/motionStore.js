@@ -29,76 +29,15 @@ export const isStreaming = derived(
 
 // Action to update sensor data
 export function updateSensorData(newData) {
-	if (!newData) {
-		console.warn('motionStore: Attempted to update with null/undefined data');
-		return;
+	if (!newData) return;
+
+	// For debugging, occasionally log updates
+	if (newData.sequence && newData.sequence % 50 === 0) {
+		console.log(`Motion store updating with sequence ${newData.sequence}`);
 	}
 
-	// Log for debugging
-	console.log('motionStore: Updating with data object:', {
-		type: typeof newData,
-		hasSequence: 'sequence' in newData,
-		keyCount: Object.keys(newData).length,
-		sensorCount: Object.keys(newData).filter((k) => /^S\d+$/.test(k)).length
-	});
-
-	try {
-		// Handle different data structures
-		let processedData = newData;
-
-		// Unwrap nested data if necessary
-		if (newData.sensorData) {
-			processedData = newData.sensorData;
-			console.log('motionStore: Unwrapped data from sensorData property');
-		} else if (newData.data) {
-			processedData = newData.data;
-			console.log('motionStore: Unwrapped data from data property');
-		}
-
-		// Verify we have actual sensor data
-		const sensorKeys = Object.keys(processedData).filter((k) => /^S\d+$/.test(k));
-
-		if (sensorKeys.length === 0) {
-			console.warn('motionStore: No sensor keys found in data - cannot update');
-			return;
-		}
-
-		// Create a clean copy with proper structure
-		const cleanData = {
-			sequence: processedData.sequence || 0,
-			timestamp: Date.now()
-		};
-
-		// Copy each sensor's quaternion data
-		sensorKeys.forEach((key) => {
-			const sensorData = processedData[key];
-
-			// Verify quaternion format
-			if (Array.isArray(sensorData) && sensorData.length === 4) {
-				// Basic validation of quaternion components
-				if (sensorData.every((v) => typeof v === 'number' && !isNaN(v))) {
-					cleanData[key] = [...sensorData]; // Create a copy
-				}
-			}
-		});
-
-		// Only update the store if we have valid sensor data
-		if (Object.keys(cleanData).length > 2) {
-			// We have more than just sequence and timestamp
-			console.log(`motionStore: Updating with ${Object.keys(cleanData).length - 2} sensors`);
-
-			// Important: create a new object to trigger reactivity
-			sensorData.set(cleanData);
-
-			// Update window debug object for troubleshooting
-			if (typeof window !== 'undefined') {
-				// @ts-ignore - Adding debug property to window
-				window.__lastSensorData = cleanData;
-			}
-		}
-	} catch (error) {
-		console.error('motionStore: Error updating sensor data:', error);
-	}
+	// Important: create a new object to trigger reactivity
+	sensorData.set({ ...newData });
 }
 
 // Action to toggle connection

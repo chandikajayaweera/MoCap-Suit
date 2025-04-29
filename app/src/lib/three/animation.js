@@ -1,43 +1,44 @@
-// Fix for animation.js
 import { getTHREE } from './engine.js';
-import { findMatchingBone, getSensorsWithData } from '$lib/motion/sensors.js';
+import { findMatchingBone, getSensorsWithData, boneNamePatterns } from '$lib/motion/sensors.js';
 import * as motionStore from '$lib/stores/motionStore.js';
 
 // Update the updateModelWithSensorData function
 export async function updateModelWithSensorData(context, sensorData, modelType = 'basic') {
 	if (!context || !context.model || !sensorData) {
-		console.log('Model update missing required data');
+		if (motionStore.debugMode) {
+			console.log('Model update failed - missing required data:', {
+				hasContext: !!context,
+				hasModel: !!(context && context.model),
+				hasSensorData: !!sensorData
+			});
+		}
 		return false;
 	}
 
 	const THREE = await getTHREE();
 	let updatedAny = false;
 
-	try {
-		// Handle both direct and nested sensor data formats
-		const actualData = sensorData.sensorData ? sensorData.sensorData : sensorData;
+	if (modelType === 'basic') {
+		updatedAny = await updateBasicModel(context, sensorData, THREE);
+	} else {
+		updatedAny = await updateGLTFModel(context, sensorData, THREE);
+	}
 
-		// Check if we have any sensor data at all
-		const hasSensors = Object.keys(actualData).some((key) => key.startsWith('S'));
+	// Update skeleton helper if bones were updated
+	if (updatedAny && context.skeleton) {
+		context.skeleton.update();
+	}
 
-		if (!hasSensors) {
-			console.log('No sensor data found in object');
-			return false;
+	// Add debugging for issues
+	if (motionStore.debugMode && sensorData.sequence && sensorData.sequence % 100 === 0) {
+		const sensorCount = Object.keys(sensorData).filter((k) => k.startsWith('S')).length;
+		console.log(`Model update for ${modelType}: ${updatedAny ? 'SUCCESS' : 'FAILED'}`);
+		console.log(`Sensor data: ${sensorCount} sensors, sequence: ${sensorData.sequence}`);
+
+		if (!updatedAny && sensorCount > 0) {
+			// This indicates we have data but couldn't match it to model parts
+			console.log('Model bone mapping issue - check bone names and sensor mapping');
 		}
-
-		if (modelType === 'basic') {
-			updatedAny = await updateBasicModel(context, actualData, THREE);
-		} else {
-			updatedAny = await updateGLTFModel(context, actualData, THREE);
-		}
-
-		// Update skeleton helper if bones were updated
-		if (updatedAny && context.skeleton) {
-			context.skeleton.update();
-		}
-	} catch (err) {
-		console.error('Error updating model with sensor data:', err);
-		return false;
 	}
 
 	return updatedAny;
@@ -45,7 +46,7 @@ export async function updateModelWithSensorData(context, sensorData, modelType =
 
 async function updateBasicModel(context, sensorData, THREE) {
 	if (!context.basicModelParts) {
-		console.log('Basic model parts not initialized');
+		if (motionStore.debugMode) console.log('Basic model parts not initialized');
 		return false;
 	}
 
@@ -53,13 +54,15 @@ async function updateBasicModel(context, sensorData, THREE) {
 	let updatedAny = false;
 
 	if (sensors.length === 0) {
-		console.log('No sensor data available for basic model update');
+		if (motionStore.debugMode) console.log('No sensor data available for basic model update');
 		return false;
 	}
 
 	const partsUpdated = [];
 
 	for (const sensor of sensors) {
+		// Convert bodyPart to the property name used in basicModelParts
+		// e.g. "RightUpperArm" to "rightUpperArm"
 		const bodyPart = sensor.bodyPart;
 		if (!bodyPart) continue;
 
@@ -69,15 +72,29 @@ async function updateBasicModel(context, sensorData, THREE) {
 		if (part && sensor.data) {
 			if (Array.isArray(sensor.data) && sensor.data.length === 4) {
 				// Validate quaternion data
-				if (sensor.data.some((val) => isNaN(val))) continue;
+				if (
+					isNaN(sensor.data[0]) ||
+					isNaN(sensor.data[1]) ||
+					isNaN(sensor.data[2]) ||
+					isNaN(sensor.data[3])
+				) {
+					if (motionStore.debugMode)
+						console.warn(`Invalid quaternion data for ${bodyPart}:`, sensor.data);
+					continue;
+				}
 
-				// Extract quaternion components - Motion capture data typically uses [w,x,y,z] format
-				const [w, x, y, z] = sensor.data;
+				// Create THREE.js quaternion from sensor data
+				const q = new THREE.Quaternion(
+					sensor.data[1], // x
+					sensor.data[2], // y
+					sensor.data[3], // z
+					sensor.data[0] // w
+				);
 
-				// Create quaternion directly - no extra transformations here
-				const q = new THREE.Quaternion(x, y, z, w);
+				// Normalize quaternion
+				q.normalize();
 
-				// Apply directly to joint without additional transformations
+				// Apply quaternion to joint
 				part.joint.quaternion.copy(q);
 
 				// Update limb orientation
@@ -86,7 +103,7 @@ async function updateBasicModel(context, sensorData, THREE) {
 				// Position limb to connect from joint
 				const midpoint = new THREE.Vector3()
 					.copy(part.joint.position)
-					.add(direction.clone().multiplyScalar(20));
+					.add(direction.clone().multiplyScalar(20)); // Half the limb length
 
 				part.limb.position.copy(midpoint);
 
@@ -108,6 +125,17 @@ async function updateBasicModel(context, sensorData, THREE) {
 		}
 	}
 
+	// Debug logging
+	if (motionStore.debugMode && sensorData.sequence % 100 === 0) {
+		if (partsUpdated.length > 0) {
+			console.log(`Basic model updated ${partsUpdated.length} parts:`, partsUpdated);
+		} else {
+			console.warn('No basic model parts updated despite having sensor data');
+			console.log('Available parts:', Object.keys(context.basicModelParts).join(', '));
+			console.log('Sensor body parts:', sensors.map((s) => s.bodyPart).join(', '));
+		}
+	}
+
 	return updatedAny;
 }
 
@@ -116,181 +144,128 @@ async function updateGLTFModel(context, sensorData, THREE) {
 	const bonesFound = new Set();
 	let updatedAny = false;
 
-	// Enhanced debugging
-	console.log('----- Bone Matching Debug -----');
-	console.log(
-		`Processing ${sensors.length} sensors with data, sequence: ${sensorData.sequence || 'unknown'}`
-	);
-
 	if (sensors.length === 0) {
-		console.log('No sensor data available for model update');
+		if (motionStore.debugMode) console.log('No sensor data available for model update');
 		return false;
 	}
 
-	// Model-specific coordinate system adjustments
-	const MODEL_ADJUSTMENTS = {
-		xbot: {
-			axis: new THREE.Vector3(0, 1, 0),
-			angle: -Math.PI / 2, // X Bot typically needs -90° Y rotation
-			applyOrder: 'premultiply'
-		},
-		amy: {
-			axis: new THREE.Vector3(0, 1, 0),
-			angle: -Math.PI / 2,
-			applyOrder: 'premultiply'
-		},
-		basic: null
-	};
-
-	// Detect model type
-	let modelType = context.modelType || 'xbot';
-	if (modelType !== 'xbot' && modelType !== 'amy' && modelType !== 'basic') {
-		modelType = 'xbot'; // Default to xbot for unknown models
-	}
-
-	const adjustment = MODEL_ADJUSTMENTS[modelType];
-
-	// Log each sensor for debugging
-	sensors.forEach((sensor) => {
-		if (sensor.bodyPart) {
-			console.log(`Sensor ${sensor.index} (${sensor.bodyPart}): [${sensor.data.join(', ')}]`);
-		}
-	});
-
-	// Log all bones in the model on first run
-	if (!context.bonesLogged) {
+	// Output model bone structure on first run or when needed
+	if (motionStore.debugMode && (!context.bonesLogged || sensorData.sequence % 500 === 0)) {
+		console.log('Analyzing model bone structure:');
 		const allBones = [];
 		context.model.traverse((obj) => {
 			if (obj.isBone || obj.type === 'Bone') {
 				allBones.push(obj.name);
 			}
 		});
-		console.log('Available bones in model:', allBones);
+		console.log('Available bones:', allBones);
+
+		// Mark as logged to avoid spamming
 		context.bonesLogged = true;
-	}
 
-	// VERIFICATION: Log exact bone matches before applying
-	sensors.forEach((sensor) => {
-		if (!sensor.bodyPart) return;
+		// Also log available sensors to help diagnose mapping issues
+		console.log('Available sensors:');
+		sensors.forEach((sensor) => {
+			console.log(`- Sensor ${sensor.index} -> ${sensor.bodyPart || 'unmapped'}`);
+		});
 
-		context.model.traverse((obj) => {
-			if ((obj.isBone || obj.type === 'Bone') && findMatchingBone(obj, sensor.bodyPart)) {
-				console.log(`Matched ${sensor.bodyPart} to bone:`, obj.name);
-				console.log('Sensor data:', sensor.data);
-				console.log('Bone initial rotation:', obj.rotation);
+		// Show mapping attempts for each sensor
+		console.log('Attempting to map sensors to bones:');
+		sensors.forEach((sensor) => {
+			if (!sensor.bodyPart) {
+				console.log(`Sensor ${sensor.index}: No body part mapping!`);
+				return;
+			}
+
+			const patterns = boneNamePatterns[sensor.bodyPart] || [sensor.bodyPart];
+			console.log(`Sensor ${sensor.index} (${sensor.bodyPart}): Looking for patterns:`, patterns);
+
+			// Check which bones would match
+			const matchingBones = [];
+			context.model.traverse((obj) => {
+				if ((obj.isBone || obj.type === 'Bone') && findMatchingBone(obj, sensor.bodyPart)) {
+					matchingBones.push(obj.name);
+				}
+			});
+
+			if (matchingBones.length) {
+				console.log(`  Found matches:`, matchingBones);
+			} else {
+				console.log(`  NO MATCHING BONES FOUND!`);
 			}
 		});
-	});
+	}
 
-	// Update bones with sensor data
+	// If we have a model with bones, try to find and update them
 	context.model.traverse((object) => {
 		if (object.isBone || object.type === 'Bone') {
 			for (const sensor of sensors) {
 				if (sensor.bodyPart && findMatchingBone(object, sensor.bodyPart)) {
+					if (
+						motionStore.debugMode &&
+						!bonesFound.has(sensor.bodyPart) &&
+						sensorData.sequence % 100 === 0
+					) {
+						console.log(`Updating bone "${object.name}" with data from "${sensor.bodyPart}"`);
+					}
+
 					bonesFound.add(sensor.bodyPart);
 
 					if (Array.isArray(sensor.data) && sensor.data.length === 4) {
-						// Make sure quaternion is valid
-						if (sensor.data.some((val) => isNaN(val))) continue;
-
-						// Get quaternion components
-						const [w, x, y, z] = sensor.data;
-
-						// Create quaternion - BNO055 uses [w,x,y,z] format, THREE.js expects [x,y,z,w]
-						const sensorQuat = new THREE.Quaternion(x, y, z, w);
-
-						// Apply coordinate system adjustment if needed
-						if (adjustment) {
-							const adjustQuat = new THREE.Quaternion().setFromAxisAngle(
-								adjustment.axis,
-								adjustment.angle
+						// Make sure quaternion is valid before applying
+						if (
+							!isNaN(sensor.data[0]) &&
+							!isNaN(sensor.data[1]) &&
+							!isNaN(sensor.data[2]) &&
+							!isNaN(sensor.data[3])
+						) {
+							// Apply quaternion with correct order [w,x,y,z]
+							object.quaternion.set(
+								sensor.data[1], // x
+								sensor.data[2], // y
+								sensor.data[3], // z
+								sensor.data[0] // w
 							);
 
-							if (adjustment.applyOrder === 'premultiply') {
-								sensorQuat.premultiply(adjustQuat);
-							} else {
-								sensorQuat.multiply(adjustQuat);
-							}
+							// Normalize quaternion to prevent drift
+							object.quaternion.normalize();
+
+							// Ensure object matrix is updated
+							object.updateMatrix();
+							object.updateMatrixWorld(true);
+
+							updatedAny = true;
+						} else {
+							if (motionStore.debugMode)
+								console.warn(`Invalid quaternion data for ${sensor.bodyPart}:`, sensor.data);
 						}
-
-						// Apply quaternion to bone
-						object.quaternion.copy(sensorQuat);
-
-						// Reset position to prevent drift
-						object.position.set(0, 0, 0);
-
-						// Normalize quaternion to prevent drift
-						object.quaternion.normalize();
-
-						// Ensure matrices are updated
-						object.updateMatrix();
-						object.updateMatrixWorld(true);
-
-						// Add visual debug helper if in debug mode
-						if (motionStore.debugMode) {
-							const helper = new THREE.AxesHelper(20);
-							object.add(helper);
-							setTimeout(() => {
-								if (object && helper) object.remove(helper);
-							}, 1000);
-						}
-
-						updatedAny = true;
 					}
 				}
 			}
 		}
 	});
 
-	// Log results
-	if (sensors.length > 0) {
-		console.log(`Found and updated ${bonesFound.size}/${sensors.length} bones`);
-
-		// List missing bones
+	// Log bones found in debug mode
+	if (motionStore.debugMode && sensorData.sequence % 100 === 0) {
 		const missingSensors = sensors
 			.filter((s) => s.bodyPart && !bonesFound.has(s.bodyPart))
 			.map((s) => s.bodyPart);
 
 		if (missingSensors.length > 0) {
-			console.warn('Missing bones for these body parts:', missingSensors);
-		}
-	}
+			console.warn('Missing bones for sensors:', missingSensors);
 
-	// DIAGNOSTIC: If no bones were found, try a more aggressive approach
-	if (sensors.length > 0 && bonesFound.size === 0) {
-		console.warn('NO BONE MATCHES FOUND! Trying a last-resort approach');
-
-		// Try direct naming patterns
-		const directMappings = {
-			RightUpperArm: 'Armature_UpperArm_R',
-			RightLowerArm: 'Armature_LowerArm_R',
-			LeftUpperArm: 'Armature_UpperArm_L',
-			LeftLowerArm: 'Armature_LowerArm_L',
-			RightUpperLeg: 'Armature_UpperLeg_R',
-			RightLowerLeg: 'Armature_LowerLeg_R',
-			LeftUpperLeg: 'Armature_UpperLeg_L',
-			LeftLowerLeg: 'Armature_LowerLeg_L'
-		};
-
-		sensors.forEach((sensor) => {
-			if (!sensor.bodyPart) return;
-
-			const directBoneName = directMappings[sensor.bodyPart];
-			if (directBoneName) {
-				const bone = context.model.getObjectByName(directBoneName);
-				if (bone) {
-					console.log(`DIRECT MATCH: ${sensor.bodyPart} -> ${directBoneName}`);
-
-					const [w, x, y, z] = sensor.data;
-					bone.quaternion.set(x, y, z, w);
-					bone.quaternion.normalize();
-					bone.updateMatrix();
-					bone.updateMatrixWorld(true);
-
-					updatedAny = true;
-				}
+			// Help diagnose by listing all bone names in the model
+			if (missingSensors.length === sensors.length) {
+				console.log('Listing all bones in model for debugging:');
+				const allBones = [];
+				context.model.traverse((obj) => {
+					if (obj.isBone || obj.type === 'Bone') {
+						allBones.push(obj.name);
+					}
+				});
+				console.log('Model bones:', allBones);
 			}
-		});
+		}
 	}
 
 	return updatedAny;
@@ -307,77 +282,30 @@ export function setSkeletonVisibility(context, visible) {
 export async function resetModelPose(context) {
 	if (!context || !context.model) return;
 
-	// For both GLTF and basic models
-	context.model.traverse((obj) => {
-		if (obj.isBone || obj.type === 'Bone') {
-			// Reset all transform components
-			obj.quaternion.set(0, 0, 0, 1);
-			obj.rotation.set(0, 0, 0);
-			obj.position.set(0, 0, 0);
-			obj.scale.set(1, 1, 1);
-			obj.updateMatrixWorld(true);
-		}
-	});
+	const THREE = await getTHREE();
 
 	if (context.mixer) {
+		// Stop all current animations
 		context.mixer.stopAllAction();
-		context.mixer.uncacheRoot(context.model);
 
-		// Force T-pose through animation system if available
+		// Find T-pose or idle animation if available
 		const clip = context.model.animations?.find(
 			(a) =>
 				a.name.toLowerCase().includes('t-pose') ||
-				a.name.toLowerCase().includes('bind') ||
-				a.name.toLowerCase().includes('idle')
+				a.name.toLowerCase().includes('idle') ||
+				a.name.toLowerCase().includes('bind')
 		);
 
 		if (clip) {
-			context.mixer.clipAction(clip).reset().setEffectiveTimeScale(1).play();
+			const action = context.mixer.clipAction(clip);
+			action.reset().play();
 		}
-	}
-}
-
-// Add this to expose model information globally for debugging
-export function exposeModelInfo(context) {
-	if (!context || !context.model) return null;
-
-	const modelInfo = {
-		bones: [],
-		animations: [],
-		hierarchy: {}
-	};
-
-	// Get all bones
-	context.model.traverse((obj) => {
-		if (obj.isBone || obj.type === 'Bone') {
-			modelInfo.bones.push({
-				name: obj.name,
-				position: obj.position.toArray(),
-				rotation: obj.rotation.toArray(),
-				parent: obj.parent ? obj.parent.name : 'none'
-			});
-
-			// Build hierarchy
-			const parentName = obj.parent ? obj.parent.name : 'root';
-			if (!modelInfo.hierarchy[parentName]) {
-				modelInfo.hierarchy[parentName] = [];
+	} else {
+		// For basic model, reset all quaternions
+		context.model.traverse((obj) => {
+			if (obj.quaternion) {
+				obj.quaternion.set(0, 0, 0, 1);
 			}
-			modelInfo.hierarchy[parentName].push(obj.name);
-		}
-	});
-
-	// Get animations
-	if (context.model.animations) {
-		modelInfo.animations = context.model.animations.map((a) => ({
-			name: a.name,
-			duration: a.duration
-		}));
+		});
 	}
-
-	// Make available globally
-	// @ts-ignore
-	window.__modelInfo = modelInfo;
-	console.log('Model info exposed at window.__modelInfo');
-
-	return modelInfo;
 }
