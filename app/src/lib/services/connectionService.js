@@ -247,7 +247,14 @@ function startHeartbeat() {
  */
 function handleWebSocketMessage(event) {
 	try {
-		const data = JSON.parse(event.data);
+		// Parse JSON data
+		let data;
+		try {
+			data = JSON.parse(event.data);
+		} catch (e) {
+			console.error('Error parsing WebSocket message:', e);
+			return;
+		}
 
 		// Update heartbeat timestamp on any message
 		lastHeartbeatResponse = Date.now();
@@ -261,7 +268,7 @@ function handleWebSocketMessage(event) {
 			// Silent - already updated lastHeartbeatResponse
 		}
 	} catch (error) {
-		console.error('Error parsing WebSocket message:', error);
+		console.error('Error handling WebSocket message:', error);
 	}
 }
 
@@ -270,51 +277,66 @@ function handleWebSocketMessage(event) {
  */
 function processSensorData(data) {
 	try {
-		// Log data reception for debugging
-		console.log('Processing sensor data:', data?.data?.sensorData?.sequence || 'unknown sequence');
-
-		// Extract sensor data
+		// Extract sensor data from various possible formats
 		let extractedData;
+
 		if (data.data && data.data.sensorData) {
 			extractedData = data.data.sensorData;
 		} else if (data.data) {
 			extractedData = data.data;
+		} else if (data.sensorData) {
+			extractedData = data.sensorData;
 		} else {
 			extractedData = data;
 		}
 
-		// Process valid data with explicit validation
-		if (extractedData && typeof extractedData === 'object') {
-			// Debug active sensors
-			const sensorCount = Object.keys(extractedData).filter((k) => k.startsWith('S')).length;
-
-			console.log(
-				'Valid sensor data found:',
-				sensorCount,
-				'sensors, sequence:',
-				extractedData.sequence
-			);
-
-			setStreaming(true);
-
-			// Track reception for statistics
-			trackDataReception(extractedData);
-
-			// Update timestamp
-			setLastDataTimestamp(Date.now());
-
-			// CRITICAL FIX: Update BOTH stores to ensure data flows to UI components
-			// The connectionStore's sensorData
-			sensorData.set(extractedData);
-
-			// The motionStore's sensorData
-			updateSensorData(extractedData);
-
-			// Ensure visualization updates at next animation frame
-			scheduleVisualUpdate();
-		} else {
-			console.warn('Invalid sensor data structure:', extractedData);
+		// Verify we have actual sensor data
+		const sensorKeys = Object.keys(extractedData).filter((k) => k.startsWith('S'));
+		if (sensorKeys.length === 0) {
+			if (extractedData.sequence !== undefined) {
+				console.log('Has sequence number but no sensor data:', extractedData.sequence);
+			}
+			return;
 		}
+
+		// Only log for significant sequence milestones
+		if (extractedData.sequence % 50 === 0) {
+			console.log(
+				`Sensor data received: ${sensorKeys.length} sensors, sequence: ${extractedData.sequence}`
+			);
+		}
+
+		// Update streaming state
+		setStreaming(true);
+
+		// Track data reception for statistics
+		trackDataReception(extractedData);
+
+		// Update timestamp
+		setLastDataTimestamp(Date.now());
+
+		// CRITICAL FIX: Create a clean copy of the data for stores
+		// This ensures we're passing the exact same data structure to both stores
+		const cleanData = {
+			sequence: extractedData.sequence || 0,
+			timestamp: Date.now() // Add timestamp for tracking
+		};
+
+		// Copy sensor data - ensuring we have only valid quaternions
+		for (const key of sensorKeys) {
+			const sensorData = extractedData[key];
+			if (
+				Array.isArray(sensorData) &&
+				sensorData.length === 4 &&
+				sensorData.every((v) => typeof v === 'number' && !isNaN(v))
+			) {
+				cleanData[key] = [...sensorData]; // Create a copy of the array
+			}
+		}
+
+		// Update both stores with consistent data
+		sensorData.set(cleanData);
+		updateSensorData(cleanData);
 	} catch (error) {
 		console.error('Error processing sensor data:', error);
 	}
@@ -502,4 +524,20 @@ function scheduleVisualUpdate() {
 			animFrameId = null;
 		});
 	}
+}
+
+/**
+ * Update both stores with clean sensor data
+ */
+export function syncSensorData(data) {
+	if (!data) return;
+
+	// Create copy of data to ensure stores don't share references
+	const cleanData = { ...data };
+
+	// Update connectionStore
+	sensorData.set(cleanData);
+
+	// Update motionStore
+	updateSensorData(cleanData);
 }

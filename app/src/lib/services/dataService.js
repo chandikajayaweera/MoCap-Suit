@@ -222,3 +222,45 @@ export function resetPacketStats() {
 	outOfOrderCount = 0;
 	missedPackets = 0;
 }
+
+/**
+ * Normalize quaternion to unit length
+ * @param {Array} quat - [w,x,y,z] quaternion
+ * @returns {Array} - Normalized quaternion
+ */
+export function normalizeQuaternion(quat) {
+	if (!Array.isArray(quat) || quat.length !== 4) {
+		return [1, 0, 0, 0]; // Identity quaternion
+	}
+
+	const [w, x, y, z] = quat;
+	const length = Math.sqrt(w * w + x * x + y * y + z * z);
+
+	if (length < 0.0001) {
+		return [1, 0, 0, 0]; // Identity quaternion for zero length
+	}
+
+	return [w / length, x / length, y / length, z / length];
+}
+
+/**
+ * Check if quaternion is valid
+ * @param {Array} quat - Quaternion to check
+ * @returns {Boolean} - True if valid
+ */
+export function isValidQuaternion(quat) {
+	if (!Array.isArray(quat) || quat.length !== 4) {
+		return false;
+	}
+
+	// Check for NaN or infinity values
+	if (quat.some((v) => !isFinite(v))) {
+		return false;
+	}
+
+	// Check magnitude is reasonable (should be close to 1)
+	const [w, x, y, z] = quat;
+	const magnitude = Math.sqrt(w * w + x * x + y * y + z * z);
+
+	return magnitude > 0.1 && magnitude < 10;
+}
