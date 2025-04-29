@@ -6,11 +6,15 @@
 
 	// Track data updates for debugging
 	$effect(() => {
-		if ($debugMode && isStreaming && sensorData && Object.keys(sensorData).length > 0) {
+		if ($debugMode && isStreaming && sensorData) {
 			const sensorCount = Object.keys(sensorData).filter((k) => k.startsWith('S')).length;
-			if (sensorCount > 0 && sensorData.sequence !== undefined && sensorData.sequence % 50 === 0) {
+
+			// Safe access to sequence property
+			const sequence = 'sequence' in sensorData ? sensorData.sequence : null;
+
+			if (sensorCount > 0 && sequence !== null && sequence % 50 === 0) {
 				console.log(
-					`DebugInfo: seq=${sensorData.sequence}, sensors=${sensorCount}, packets=${dataPacketsReceived}`
+					`DebugInfo: seq=${sequence}, sensors=${sensorCount}, packets=${dataPacketsReceived}`
 				);
 			}
 		}
@@ -29,7 +33,7 @@
 		}
 
 		// Format sequence number if available
-		const seq = sensorData.sequence !== undefined ? `SEQ: ${sensorData.sequence}` : '';
+		const seq = 'sequence' in sensorData ? `SEQ: ${sensorData.sequence}` : '';
 
 		// Count available sensors more reliably
 		const activeSensors = Object.keys(sensorData).filter(

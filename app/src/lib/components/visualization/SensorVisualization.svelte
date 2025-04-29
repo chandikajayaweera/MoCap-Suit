@@ -7,11 +7,10 @@
 		showSkeleton,
 		debugMode,
 		loading,
-		setLoading
+		setLoading,
+		debugEnabled
 	} from '$lib/stores/motionStore.js';
 
-	import ModelSelector from './ModelSelector.svelte';
-	import EnvironmentSelector from './EnvironmentSelector.svelte';
 	import { setupScene, cleanupScene } from '$lib/three/engine.js';
 	import { createBasicModel, loadModel } from '$lib/three/models.js';
 	import { applyEnvironment } from '$lib/three/environments.js';
@@ -20,17 +19,23 @@
 		setSkeletonVisibility,
 		resetModelPose
 	} from '$lib/three/animation.js';
+	import { resetDataFormatCache } from '$lib/motion/sensors.js';
 
 	// Props using Svelte 5 runes syntax
-	let { data, isConnected = false } = $props();
+	let { data = {}, isConnected = false } = $props();
 
-	// Local state
+	// Local state with Svelte 5 $state rune
 	let container;
-	let sceneContext = null;
-	let initialized = false;
-	let currentModelId = '';
+	let sceneContext = $state(null);
+	let initialized = $state(false);
+	let currentModelId = $state('');
+	let frameCount = $state(0);
+	let lastSequence = $state(0);
 
-	// Direct DOM event handlers for model and environment changes
+	// Animation frame reference
+	let animationFrame = null;
+
+	// Model change handler using Svelte 5 event syntax
 	function handleModelChange(event) {
 		const newModelId = event.target.value;
 		console.log(`Model changed via select: ${newModelId}`);
@@ -38,6 +43,7 @@
 		changeModel(newModelId);
 	}
 
+	// Environment change handler
 	function handleEnvironmentChange(event) {
 		const newEnvId = event.target.value;
 		console.log(`Environment changed via select: ${newEnvId}`);
@@ -59,6 +65,9 @@
 
 		setLoading(true);
 		try {
+			// Reset data format cache when changing models
+			resetDataFormatCache();
+
 			// First clear previous model
 			if (sceneContext.model) {
 				console.log('Removing previous model');
@@ -96,7 +105,7 @@
 		}
 	}
 
-	// Direct environment change function
+	// Environment change function
 	function changeEnvironment(envId) {
 		if (!sceneContext || !initialized) return;
 
@@ -104,88 +113,113 @@
 		applyEnvironment(sceneContext, envId);
 	}
 
-	// Animate when new sensor data arrives
+	// Animation loop using requestAnimationFrame instead of effect
+	function startAnimation() {
+		if (animationFrame) return;
+
+		function animate() {
+			frameCount++;
+
+			// Process data at appropriate intervals (every ~200ms)
+			if (initialized && sceneContext && data && frameCount % 12 === 0) {
+				processSensorData();
+			}
+
+			animationFrame = requestAnimationFrame(animate);
+		}
+
+		animate();
+	}
+
+	function stopAnimation() {
+		if (animationFrame) {
+			cancelAnimationFrame(animationFrame);
+			animationFrame = null;
+		}
+	}
+
+	// Process sensor data without triggering reactive updates
+	function processSensorData() {
+		// Check for new data via sequence
+		let hasNewData = true;
+
+		if ('sequence' in data) {
+			hasNewData = data.sequence !== lastSequence;
+			if (hasNewData) {
+				lastSequence = data.sequence;
+			}
+		}
+
+		// Only process if we have new data
+		if (!hasNewData) return;
+
+		// Log data occasionally for debugging
+		if ($debugMode && lastSequence % 100 === 0) {
+			console.log('Processing sensor data:', {
+				sequence: lastSequence,
+				sensorCount: Object.keys(data).filter((k) => k.startsWith('S')).length
+			});
+		}
+
+		// Apply to model - try both data formats
+		if (data.sensorData) {
+			updateModelWithSensorData(sceneContext, data.sensorData, currentModelId);
+		} else if (typeof data === 'object' && Object.keys(data).some((k) => k.startsWith('S'))) {
+			updateModelWithSensorData(sceneContext, data, currentModelId);
+		}
+	}
+
+	// Watch data changes with a reactive statement, but don't call processSensorData directly
+	// This prevents infinite loops while still tracking when data changes
 	$effect(() => {
-		if (initialized && sceneContext && data) {
-			// Add detailed debugging to understand the data structure
-			if ($debugMode) {
-				console.log('Received sensor data:', data);
+		if (data && 'sequence' in data) {
+			// Just access data.sequence to create a dependency
+			// This ensures the effect runs when sequence changes
+			const seq = data.sequence;
 
-				// Check if we're receiving nested data (common issue)
-				if (data.sensorData) {
-					console.log("Data is nested under 'sensorData' property");
-
-					// If data is nested, we need to use the nested data
-					updateModelWithSensorData(sceneContext, data.sensorData, currentModelId);
-				} else if (typeof data === 'object' && Object.keys(data).some((k) => k.startsWith('S'))) {
-					// Direct sensor data format (S0, S1, etc.)
-					console.log('Direct sensor data format detected');
-					updateModelWithSensorData(sceneContext, data, currentModelId);
-				} else {
-					console.warn('Unrecognized data format:', data);
-					// Try updating with whatever we have anyway
-					updateModelWithSensorData(sceneContext, data, currentModelId);
-				}
-			} else {
-				// When debug is off, try both formats
-				if (data.sensorData) {
-					updateModelWithSensorData(sceneContext, data.sensorData, currentModelId);
-				} else {
-					updateModelWithSensorData(sceneContext, data, currentModelId);
-				}
+			// Don't do anything else here - the animation loop handles updates
+			if ($debugMode && seq % 500 === 0) {
+				console.log(`Data sequence updated to ${seq}`);
 			}
 		}
 	});
 
-	// Toggle skeleton visibility with DIRECT update to the skeleton
+	// Toggle skeleton visibility
 	function handleSkeletonToggle() {
-		// Store the new value to ensure consistency
 		const newValue = !$showSkeleton;
-
-		// Update the store
 		showSkeleton.set(newValue);
 
-		// Directly update the skeleton visibility with the same value
 		if (sceneContext && sceneContext.skeleton) {
-			console.log(`Directly setting skeleton visibility to: ${newValue}`);
+			console.log(`Setting skeleton visibility to: ${newValue}`);
 			sceneContext.skeleton.visible = newValue;
 		}
 	}
 
 	// Toggle debug mode
 	function handleDebugToggle() {
-		// Toggle debug mode
 		const newValue = !$debugMode;
 		debugMode.set(newValue);
 
-		// When enabling debug, immediately output diagnostic information
 		if (newValue && sceneContext && sceneContext.model) {
 			console.log('===== DEBUG MODE ENABLED =====');
-
-			// Log current model info
 			console.log(`Current model: ${currentModelId}`);
 
-			// If we have data, log it
 			if (data) {
 				console.log('Current data:', data);
-
-				// Check for sensor data
 				const sensorKeys = Object.keys(data).filter((k) => k.startsWith('S'));
 				console.log(`Sensor keys found: ${sensorKeys.length}`, sensorKeys);
 
-				// Show a sample of data if available
 				if (sensorKeys.length > 0) {
 					const firstKey = sensorKeys[0];
 					console.log(`Sample sensor data (${firstKey}):`, data[firstKey]);
 				}
-			} else {
-				console.log('No data available');
 			}
 
-			// Force bone structure analysis
-			sceneContext.bonesLogged = false;
+			// Force bone structure analysis on next update
+			if (sceneContext) {
+				sceneContext.bonesLogged = false;
+			}
 
-			// Reset model pose to see if that helps
 			console.log('Attempting to reset model pose...');
 			resetModelPose(sceneContext);
 		}
@@ -199,7 +233,7 @@
 				console.log('Setting up 3D scene');
 				sceneContext = await setupScene(container);
 
-				// Configure camera and controls for better movement
+				// Configure camera and controls
 				if (sceneContext.camera) {
 					sceneContext.camera.position.set(0, 100, 200);
 				}
@@ -214,7 +248,7 @@
 					sceneContext.controls.target.set(0, 100, 0);
 				}
 
-				// Initialize with starting model and environment
+				// Initialize model and environment
 				const initialModelId = $selectedModel;
 				const initialEnvId = $selectedEnvironment;
 
@@ -229,7 +263,7 @@
 				}
 				currentModelId = initialModelId;
 
-				// Set skeleton visibility based on store value
+				// Set skeleton visibility
 				if (sceneContext.skeleton) {
 					const skeletonVisible = $showSkeleton;
 					console.log(`Initial skeleton visibility: ${skeletonVisible}`);
@@ -239,6 +273,9 @@
 				initialized = true;
 				setLoading(false);
 				console.log('3D scene initialized successfully');
+
+				// Start animation loop
+				startAnimation();
 			} catch (err) {
 				console.error('Error initializing 3D scene:', err);
 				setLoading(false);
@@ -246,15 +283,13 @@
 		})();
 
 		return () => {
-			if (sceneContext) {
-				console.log('Cleaning up 3D scene');
-				cleanupScene(sceneContext);
-				sceneContext = null;
-			}
+			stopAnimation();
+			if (sceneContext) cleanupScene(sceneContext);
 		};
 	});
 
 	onDestroy(() => {
+		stopAnimation();
 		if (sceneContext) cleanupScene(sceneContext);
 	});
 </script>
@@ -289,6 +324,7 @@
 				<option value="outdoor">Outdoor</option>
 				<option value="dark">Dark Room</option>
 				<option value="grid">Grid Only</option>
+				<option value="shadowless">Shadowless Studio</option>
 			</select>
 		</div>
 

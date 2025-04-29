@@ -1,10 +1,8 @@
 <script>
-	import { onMount } from 'svelte';
-
 	// Props using the $props rune for Svelte 5
 	let { logs = [], onClearLogs = () => {} } = $props();
 
-	// Log filtering
+	// Log filtering with Svelte 5 $state rune
 	let filterText = $state('');
 	let filterLevel = $state('all');
 	let autoscroll = $state(true);
@@ -12,7 +10,7 @@
 	// DOM reference to log container for autoscrolling
 	let logContainer;
 
-	// Filtered logs based on search text and level
+	// Filtered logs based on search text and level using $derived rune
 	const filteredLogs = $derived(
 		logs.filter((log) => {
 			const matchesText =
@@ -27,6 +25,7 @@
 		})
 	);
 
+	// Style helper functions
 	function getLogStyle(message) {
 		if (message.includes('[ERROR]')) return 'text-red-600';
 		if (message.includes('[WARNING]')) return 'text-yellow-600';
@@ -45,15 +44,7 @@
 		}
 	}
 
-	// Handle scrolling using onMount and $effect
-	onMount(() => {
-		// Initial scroll
-		if (autoscroll) {
-			scrollToBottom();
-		}
-	});
-
-	// Watch for changes to logs or autoscroll setting
+	// Watch for changes to logs or autoscroll setting using $effect
 	$effect(() => {
 		// This effect will run whenever filteredLogs or autoscroll changes
 		if (autoscroll && logContainer && filteredLogs.length > 0) {
@@ -73,6 +64,13 @@
 		// Only change autoscroll if user has scrolled and it doesn't match current setting
 		if (!atBottom && autoscroll) {
 			autoscroll = false;
+		}
+	}
+
+	// Handle clear button click using Svelte 5 syntax
+	function handleClear() {
+		if (typeof onClearLogs === 'function') {
+			onClearLogs();
 		}
 	}
 </script>
@@ -99,7 +97,7 @@
 			</select>
 
 			<button
-				onclick={onClearLogs}
+				onclick={handleClear}
 				class="rounded bg-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400"
 			>
 				Clear

@@ -1,5 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
+	import { get } from 'svelte/store';
 
 	// UI Components
 	import CommandPanel from '$lib/components/CommandPanel.svelte';
@@ -35,16 +36,19 @@
 		sensorData
 	} from '$lib/stores/connectionStore.js';
 
-	// UI state
+	// UI state with Svelte 5 $state rune
 	let showConfiguration = $state(true);
 
-	// Debug store updates
+	// Debug store updates using $effect from Svelte 5
 	$effect(() => {
+		// Using $sensorData to access the store value
 		if ($sensorData && Object.keys($sensorData).length > 0) {
-			const sequence = $sensorData?.sequence;
-			// Log occasionally for monitoring
-			if (sequence && sequence % 100 === 0) {
-				console.log(`Page sensor data updated: seq=${sequence}`);
+			// Type-safe check for sequence property
+			if ('sequence' in $sensorData && typeof $sensorData.sequence === 'number') {
+				// Log occasionally for monitoring
+				if ($sensorData.sequence % 100 === 0) {
+					console.log(`Page sensor data updated: seq=${$sensorData.sequence}`);
+				}
 			}
 		}
 	});
@@ -115,7 +119,7 @@
 
 				// If no data for 10 seconds while streaming is supposedly active
 				if (timeSinceLastData > 10000) {
-					$isStreaming = false;
+					isStreaming.set(false);
 					logs.update((currentLogs) => [
 						...currentLogs,
 						{

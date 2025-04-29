@@ -1,8 +1,6 @@
 <script>
-	// Standard prop declarations
-	export let connected = false;
-	export let isStreaming = false; // Whether streaming is active
-	export let onSendCommand = () => {};
+	// Props using Svelte 5 $props rune
+	let { connected = false, isStreaming = false, onSendCommand = () => {} } = $props();
 
 	// Command definitions with better streaming control logic
 	const commands = [
@@ -118,12 +116,15 @@
 		}
 	];
 
-	// Reactive grouping by category
-	$: commandsByCategory = commands.reduce((acc, cmd) => {
-		(acc[cmd.category] ||= []).push(cmd);
-		return acc;
-	}, /** @type {Record<string, typeof commands>} */ ({}));
+	// Reactive grouping by category using $derived
+	const commandsByCategory = $derived(
+		commands.reduce((acc, cmd) => {
+			(acc[cmd.category] ||= []).push(cmd);
+			return acc;
+		}, {})
+	);
 
+	// Handle command click with Svelte 5 event syntax
 	function handleCommand(id) {
 		if (!connected) return;
 
@@ -138,7 +139,10 @@
 			return;
 		}
 
-		onSendCommand(id);
+		// Call the handler
+		if (typeof onSendCommand === 'function') {
+			onSendCommand(id);
+		}
 	}
 </script>
 

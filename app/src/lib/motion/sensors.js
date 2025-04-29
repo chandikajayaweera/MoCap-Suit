@@ -1,4 +1,4 @@
-// Sensor mapping and configuration
+// Enhanced sensor mapping and configuration
 
 // Maps sensor indices to body part names
 export const sensorMapping = {
@@ -18,105 +18,162 @@ export const boneNamePatterns = {
 		'RightUpperArm',
 		'RightArm',
 		'mixamorig:RightArm',
+		'mixamorig1RightArm', // Specifically for our model
 		'right_upper_arm',
-		'right_arm'
+		'right_arm',
+		'R_Arm',
+		'RArmHigh',
+		'Arm_R'
 	],
 	RightLowerArm: [
 		'RightLowerArm',
 		'RightForeArm',
 		'mixamorig:RightForeArm',
+		'mixamorig1RightForeArm', // Specifically for our model
 		'right_lower_arm',
-		'right_forearm'
+		'right_forearm',
+		'R_ForeArm',
+		'RArmLow',
+		'ForeArm_R'
 	],
-	LeftUpperArm: ['LeftUpperArm', 'LeftArm', 'mixamorig:LeftArm', 'left_upper_arm', 'left_arm'],
+	LeftUpperArm: [
+		'LeftUpperArm',
+		'LeftArm',
+		'mixamorig:LeftArm',
+		'mixamorig1LeftArm', // Specifically for our model
+		'left_upper_arm',
+		'left_arm',
+		'L_Arm',
+		'LArmHigh',
+		'Arm_L'
+	],
 	LeftLowerArm: [
 		'LeftLowerArm',
 		'LeftForeArm',
 		'mixamorig:LeftForeArm',
+		'mixamorig1LeftForeArm', // Specifically for our model
 		'left_lower_arm',
-		'left_forearm'
+		'left_forearm',
+		'L_ForeArm',
+		'LArmLow',
+		'ForeArm_L'
 	],
 	RightUpperLeg: [
 		'RightUpperLeg',
 		'RightUpLeg',
 		'mixamorig:RightUpLeg',
+		'mixamorig1RightUpLeg', // Specifically for our model
 		'right_upper_leg',
-		'right_thigh'
+		'right_thigh',
+		'R_UpLeg',
+		'RLegHigh',
+		'Thigh_R'
 	],
 	RightLowerLeg: [
 		'RightLowerLeg',
 		'RightLeg',
 		'mixamorig:RightLeg',
+		'mixamorig1RightLeg', // Specifically for our model
 		'right_lower_leg',
 		'right_leg',
-		'right_shin'
+		'right_shin',
+		'R_Leg',
+		'RLegLow',
+		'Shin_R'
 	],
 	LeftUpperLeg: [
 		'LeftUpperLeg',
 		'LeftUpLeg',
 		'mixamorig:LeftUpLeg',
+		'mixamorig1LeftUpLeg', // Specifically for our model
 		'left_upper_leg',
-		'left_thigh'
+		'left_thigh',
+		'L_UpLeg',
+		'LLegHigh',
+		'Thigh_L'
 	],
 	LeftLowerLeg: [
 		'LeftLowerLeg',
 		'LeftLeg',
 		'mixamorig:LeftLeg',
+		'mixamorig1LeftLeg', // Specifically for our model
 		'left_lower_leg',
 		'left_leg',
-		'left_shin'
+		'left_shin',
+		'L_Leg',
+		'LLegLow',
+		'Shin_L'
 	]
 };
 
-// Find a matching bone in the model based on standard naming patterns
-export function findMatchingBone(object, bodyPart) {
-	if (!object || !object.name || !bodyPart) return false;
+// Cache of analyzed sensor data formats for faster processing
+const dataFormatCache = {
+	nestedFormat: false,
+	directFormat: false,
+	analyzed: false,
+	logged: false
+};
 
-	const patterns = boneNamePatterns[bodyPart] || [bodyPart];
-	const objectNameLower = object.name.toLowerCase();
-
-	return patterns.some((pattern) => {
-		// Try exact match
-		if (object.name === pattern) return true;
-
-		// Try case insensitive match
-		if (objectNameLower === pattern.toLowerCase()) return true;
-
-		// Try includes
-		if (objectNameLower.includes(pattern.toLowerCase())) return true;
-
-		return false;
-	});
+/**
+ * Reset the data format cache (useful when switching data sources)
+ */
+export function resetDataFormatCache() {
+	dataFormatCache.nestedFormat = false;
+	dataFormatCache.directFormat = false;
+	dataFormatCache.analyzed = false;
+	dataFormatCache.logged = false;
+	console.log('Sensor data format cache reset');
 }
 
-// Get all sensors with data from the sensor data object
-// In app/src/lib/motion/sensors.js
-// Update the getSensorsWithData function
+/**
+ * Check if debug mode is enabled
+ * @returns {boolean} - Whether debug mode is enabled
+ */
+function isDebugEnabled() {
+	try {
+		if (typeof window !== 'undefined' && window.__debugModeValue !== undefined) {
+			return !!window.__debugModeValue;
+		}
+		// eslint-disable-next-line no-unused-vars
+	} catch (e) {
+		// Silent fail for server-side rendering
+	}
+	return false;
+}
 
+/**
+ * Intelligent sensor data parser that works with multiple data formats
+ * @param {Object} sensorData - Raw sensor data object
+ * @returns {Array} - Array of processed sensor objects
+ */
 export function getSensorsWithData(sensorData) {
 	if (!sensorData) return [];
 
-	// Enable debug for troubleshooting
-	let isDebug = true; // Force debug on temporarily to diagnose issues
+	// Get debug status
+	const isDebug = isDebugEnabled();
 
-	// Also check window.__debugModeValue if available
-	try {
-		if (typeof window !== 'undefined' && window.__debugModeValue !== undefined) {
-			isDebug = isDebug || !!window.__debugModeValue;
-		}
-	} catch (_) {
-		// In server environment, keep the default
-	}
-
-	// Handle case where sensorData might be inside a nested structure
+	// Handle different data formats based on previously identified patterns
 	let actualSensorData = sensorData;
-	if (sensorData.sensorData && typeof sensorData.sensorData === 'object') {
-		actualSensorData = sensorData.sensorData;
-		if (isDebug) console.log('Unwrapped nested sensorData');
+
+	// If we haven't analyzed this format yet, do so now
+	if (!dataFormatCache.analyzed) {
+		if (sensorData.sensorData && typeof sensorData.sensorData === 'object') {
+			if (isDebug) console.log('Detected nested sensorData format');
+			dataFormatCache.nestedFormat = true;
+			dataFormatCache.analyzed = true;
+		} else if (
+			typeof sensorData === 'object' &&
+			Object.keys(sensorData).some((k) => k.startsWith('S'))
+		) {
+			if (isDebug) console.log('Detected direct sensor data format');
+			dataFormatCache.directFormat = true;
+			dataFormatCache.analyzed = true;
+		}
 	}
 
-	if (isDebug) {
-		console.log('Processing sensor data:', actualSensorData);
+	// Apply the correct format extraction
+	if (dataFormatCache.nestedFormat && sensorData.sensorData) {
+		actualSensorData = sensorData.sensorData;
 	}
 
 	// Get all sensor keys (S0, S1, etc.)
@@ -124,13 +181,14 @@ export function getSensorsWithData(sensorData) {
 		(key) => key.startsWith('S') && /^S\d+$/.test(key)
 	);
 
-	if (isDebug) {
+	if (isDebug && sensorKeys.length > 0 && !dataFormatCache.logged) {
 		console.log(`Found ${sensorKeys.length} sensor entries in data:`, sensorKeys);
 
-		// Log the actual data structures for diagnosis
-		sensorKeys.forEach((key) => {
-			console.log(`${key} data:`, actualSensorData[key]);
-		});
+		// Sample the first sensor data to understand format
+		const firstKey = sensorKeys[0];
+		console.log(`Sample data format (${firstKey}):`, actualSensorData[firstKey]);
+
+		dataFormatCache.logged = true;
 	}
 
 	// Filter for valid sensor data and map to structured objects
@@ -160,17 +218,60 @@ export function getSensorsWithData(sensorData) {
 			};
 		});
 
-	if (isDebug) {
-		console.log(
-			`Processed ${result.length} valid sensors with mappings:`,
-			result.map((s) => `${s.bodyPart}(${s.index})`)
-		);
-	}
-
 	return result;
 }
 
-// Map sensor data to a model's skeleton
+/**
+ * Find a matching bone in the model based on standard naming patterns
+ * With special handling for mixamorig1 prefix used in our model
+ * @param {Object} object - Bone object from model
+ * @param {string} bodyPart - Body part identifier
+ * @returns {boolean} - Whether this bone matches the body part
+ */
+export function findMatchingBone(object, bodyPart) {
+	if (!object || !object.name || !bodyPart) return false;
+
+	const patterns = boneNamePatterns[bodyPart] || [bodyPart];
+	const objectNameLower = object.name.toLowerCase();
+
+	// Special handling for mixamorig1 prefix in our model names
+	if (object.name.startsWith('mixamorig1')) {
+		// Create specific pattern without the mixamorig1 prefix to match against patterns
+		const nameWithoutPrefix = object.name.replace('mixamorig1', '');
+
+		// Check if any pattern matches the name without prefix
+		for (const pattern of patterns) {
+			// Skip mixamorig1 patterns since we're already checking specifically for those
+			if (pattern.startsWith('mixamorig1')) continue;
+
+			// Check if pattern matches the part after mixamorig1
+			if (nameWithoutPrefix === pattern) {
+				return true;
+			}
+		}
+	}
+
+	// Standard pattern matching
+	return patterns.some((pattern) => {
+		// Try exact match
+		if (object.name === pattern) return true;
+
+		// Try case insensitive match
+		if (objectNameLower === pattern.toLowerCase()) return true;
+
+		// Try includes
+		if (objectNameLower.includes(pattern.toLowerCase())) return true;
+
+		return false;
+	});
+}
+
+/**
+ * Map sensor data to a model's skeleton for analysis
+ * @param {Object} model - The 3D model
+ * @param {Object} sensorData - Sensor data object
+ * @returns {Object} - Analysis of bone mapping
+ */
 export function mapSensorsToSkeleton(model, sensorData) {
 	const sensors = getSensorsWithData(sensorData);
 	const bonesUpdated = [];
@@ -195,6 +296,7 @@ export function mapSensorsToSkeleton(model, sensorData) {
 	return {
 		success: bonesUpdated.length > 0,
 		bonesUpdated,
-		totalBones: sensors.length
+		totalSensors: sensors.length,
+		mappedSensors: bonesUpdated.length
 	};
 }
