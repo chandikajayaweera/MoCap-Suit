@@ -6,38 +6,37 @@ import { getSensorsWithData } from './sensors.js';
 // These values are tuned for the specific IMU placement on each body segment
 export const DEFAULT_CORRECTIONS = {
 	RightUpperArm: {
-		// Rotation in Euler angles (degrees) to correct sensor orientation
-		rotationCorrection: [0, 0, 90], // x, y, z in degrees
-		// Axes to invert (1 = invert, 0 = keep)
-		axisInversion: [0, 0, 1] // x, y, z
+		// Based on the T-pose data where arms should be horizontal
+		rotationCorrection: [0, 90, 180],
+		axisInversion: [0, 0, 0]
 	},
 	RightLowerArm: {
-		rotationCorrection: [0, 0, 90],
-		axisInversion: [0, 0, 1]
+		rotationCorrection: [0, 90, 180],
+		axisInversion: [0, 0, 0]
 	},
 	LeftUpperArm: {
-		rotationCorrection: [0, 0, -90],
-		axisInversion: [0, 0, 1]
+		rotationCorrection: [0, -90, 180],
+		axisInversion: [0, 0, 0]
 	},
 	LeftLowerArm: {
-		rotationCorrection: [0, 0, -90],
-		axisInversion: [0, 0, 1]
+		rotationCorrection: [0, -90, 180],
+		axisInversion: [0, 0, 0]
 	},
 	RightUpperLeg: {
 		rotationCorrection: [90, 0, 0],
-		axisInversion: [0, 1, 0]
+		axisInversion: [0, 0, 0]
 	},
 	RightLowerLeg: {
 		rotationCorrection: [90, 0, 0],
-		axisInversion: [0, 1, 0]
+		axisInversion: [0, 0, 0]
 	},
 	LeftUpperLeg: {
 		rotationCorrection: [90, 0, 0],
-		axisInversion: [0, 1, 0]
+		axisInversion: [0, 0, 0]
 	},
 	LeftLowerLeg: {
 		rotationCorrection: [90, 0, 0],
-		axisInversion: [0, 1, 0]
+		axisInversion: [0, 0, 0]
 	}
 };
 
@@ -72,9 +71,12 @@ export async function correctQuaternion(quaternionData, bodyPart) {
 
 	// Get correction for this body part
 	const correction = userCorrections[bodyPart];
-	if (!correction) return quaternionData;
+	if (!correction) {
+		console.warn(`No correction data for ${bodyPart}`);
+		return quaternionData;
+	}
 
-	// Create quaternion from sensor data - correct ordering
+	// Create quaternion from sensor data with correct ordering
 	const q = new THREE.Quaternion(
 		quaternionData[1], // x
 		quaternionData[2], // y
@@ -96,11 +98,12 @@ export async function correctQuaternion(quaternionData, bodyPart) {
 		);
 		const correctionQuaternion = new THREE.Quaternion().setFromEuler(correctionEuler);
 
-		// Apply correction by multiplying - order is important!
-		q.multiplyQuaternions(correctionQuaternion, q);
+		// Apply correction - try both multiplication orders if needed
+		// For BNO055 sensors, this order tends to work better
+		q.premultiply(correctionQuaternion);
 	}
 
-	// Then apply axis inversion if needed (this is more reliable to do after the rotation)
+	// Then apply axis inversion if needed
 	if (
 		correction.axisInversion &&
 		(correction.axisInversion[0] || correction.axisInversion[1] || correction.axisInversion[2])
@@ -136,30 +139,51 @@ export function storeTposeCalibration(sensorData) {
 	// Extract quaternions for each body part
 	const sensors = getSensorsWithData(sensorData);
 
+	// Debug output
+	console.log(
+		`Raw sensor data for T-pose calibration:`,
+		Object.keys(sensorData).filter((k) => k.startsWith('S')).length + ' sensors'
+	);
+
+	// Reset calibration data
 	calibrationData.tPoseQuaternions = {};
-	calibrationData.isCalibrated = sensors.length > 0;
+	calibrationData.isCalibrated = false;
+	calibrationData.tPoseTimestamp = new Date();
 
-	console.log(`Capturing T-pose with ${sensors.length} sensors`);
+	if (sensors.length === 0) {
+		console.error('No valid sensors found for T-pose calibration');
+		return {};
+	}
 
-	// Create a map to ensure we get the latest data for each body part
-	const latestSensorData = {};
+	console.log(`Processing T-pose with ${sensors.length} sensors`);
 
+	// Store each sensor's quaternion data by body part
 	sensors.forEach((sensor) => {
 		if (sensor.bodyPart && Array.isArray(sensor.data) && sensor.data.length === 4) {
-			// Verify the quaternion is valid
+			// Validate quaternion data
 			if (!sensor.data.some(isNaN)) {
-				latestSensorData[sensor.bodyPart] = [...sensor.data];
-				console.log(`Stored T-pose for ${sensor.bodyPart}: [${sensor.data.join(', ')}]`);
+				// Store a copy of the data to avoid reference issues
+				calibrationData.tPoseQuaternions[sensor.bodyPart] = [...sensor.data];
+				console.log(
+					`✓ Stored T-pose for ${sensor.bodyPart} (sensor S${sensor.index}): [${sensor.data.join(', ')}]`
+				);
 			} else {
-				console.warn(`Invalid quaternion data for ${sensor.bodyPart}`);
+				console.warn(`⚠ Invalid quaternion data for ${sensor.bodyPart}: ${sensor.data}`);
 			}
+		} else {
+			console.warn(`⚠ Sensor ${sensor.index} has invalid data or no body part mapping`);
 		}
 	});
 
-	// Store the latest data for each body part
-	Object.keys(latestSensorData).forEach((bodyPart) => {
-		calibrationData.tPoseQuaternions[bodyPart] = latestSensorData[bodyPart];
-	});
+	// Verify we have enough data
+	const capturedCount = Object.keys(calibrationData.tPoseQuaternions).length;
+
+	if (capturedCount > 0) {
+		calibrationData.isCalibrated = true;
+		console.log(`✓ T-pose calibration complete with ${capturedCount} body parts`);
+	} else {
+		console.error('❌ T-pose calibration failed - no valid quaternions captured');
+	}
 
 	return calibrationData.tPoseQuaternions;
 }
@@ -208,12 +232,20 @@ export async function applyCalibration(quaternionData, bodyPart) {
 	).normalize();
 
 	// Apply the inverse T-pose quaternion to the input quaternion
-	// This effectively gives us the "delta" from T-pose
 	// q_result = q_input * q_tpose_inverse (right multiply)
 	const resultQ = new THREE.Quaternion().multiplyQuaternions(inputQ, invTpose);
 
 	// Return as array in [w, x, y, z] format
 	return [resultQ.w, resultQ.x, resultQ.y, resultQ.z];
+}
+
+// Add this debug function to help with calibration troubleshooting
+export function getCalibrationStatus() {
+	return {
+		isCalibrated: calibrationData.isCalibrated,
+		calibratedParts: Object.keys(calibrationData.tPoseQuaternions),
+		timestamp: calibrationData.tPoseTimestamp
+	};
 }
 
 /**

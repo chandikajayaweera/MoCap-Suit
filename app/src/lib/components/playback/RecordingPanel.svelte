@@ -52,6 +52,11 @@
 
 		let currentFrameIndex = 0;
 		const startTime = Date.now();
+		const frameRate = 16; // ~60fps - match this to your recording rate
+
+		console.log(
+			`Starting playback of recording: ${recording.name} with ${recording.frames.length} frames`
+		);
 
 		playbackInterval = setInterval(() => {
 			const elapsed = Date.now() - startTime;
@@ -64,26 +69,46 @@
 				currentFrameIndex++;
 			}
 
-			// Update sensorData with current frame
-			const frame = recording.frames[currentFrameIndex];
-			sensorData.set(frame.data);
-
-			// Update progress
-			playbackProgress.set(elapsed / recording.duration);
-
-			// Stop at end
-			if (currentFrameIndex >= recording.frames.length - 1 || elapsed >= recording.duration) {
+			if (currentFrameIndex >= recording.frames.length) {
+				// We've reached the end of the recording
 				clearInterval(playbackInterval);
 				playbackInterval = null;
-				sensorData.set(recording.frames[recording.frames.length - 1].data);
 				playbackProgress.set(1);
 
 				// Reset after 500ms
 				setTimeout(() => {
 					stopPlayback();
 				}, 500);
+				return;
 			}
-		}, 16); // ~60fps
+
+			// Get the current frame's data
+			const frame = recording.frames[currentFrameIndex];
+
+			// CRITICAL: Ensure we're passing a new object to trigger reactivity and properly format data
+			// This is a key fix for the playback issue
+			const frameData = { ...frame.data };
+
+			// Add a sequence number if missing to ensure proper processing
+			if (!frameData.sequence) {
+				frameData.sequence = currentFrameIndex;
+			}
+
+			// Debug the frame data to help diagnose issues
+			if (currentFrameIndex % 30 === 0) {
+				console.log(`Playback frame ${currentFrameIndex}/${recording.frames.length}`, {
+					elapsed: elapsed,
+					frameTime: frame.relativeTime,
+					sensorCount: Object.keys(frameData).filter((k) => k.startsWith('S')).length
+				});
+			}
+
+			// Update sensorData with current frame - this is what drives the visualization
+			sensorData.set(frameData);
+
+			// Update progress
+			playbackProgress.set(elapsed / recording.duration);
+		}, frameRate);
 	}
 
 	// Stop current playback

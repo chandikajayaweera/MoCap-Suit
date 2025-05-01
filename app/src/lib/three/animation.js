@@ -235,7 +235,7 @@ async function updateBasicModel(context, sensorData, THREE) {
 }
 
 /**
- * Update a GLTF model with sensor data
+ * Update a GLTF model with sensor data - with enhanced debugging for playback
  * @param {Object} context - Scene context with model reference
  * @param {Object} sensorData - Sensor data with quaternions
  * @param {Object} THREE - THREE.js library
@@ -247,6 +247,13 @@ async function updateGLTFModel(context, sensorData, THREE) {
 	let updatedAny = false;
 
 	if (sensors.length === 0) {
+		if (sensorData && sensorData.sequence !== undefined) {
+			// We have data but no sensors were extracted - this indicates a parsing problem
+			console.warn(
+				`Received sensor data with sequence ${sensorData.sequence} but no sensors were extracted`
+			);
+			console.log('Raw sensor data keys:', Object.keys(sensorData));
+		}
 		return false;
 	}
 
@@ -263,6 +270,11 @@ async function updateGLTFModel(context, sensorData, THREE) {
 			console.log(
 				`Built bone mapping for model ${modelId}: ${Object.keys(boneMapping).length} body parts mapped.`
 			);
+
+			// Log the specific mappings to help with debugging
+			Object.entries(boneMapping).forEach(([bodyPart, bones]) => {
+				console.log(`  ${bodyPart} -> ${bones.map((b) => b.name).join(', ')}`);
+			});
 		} else {
 			console.warn(
 				`Failed to build any bone mappings for model ${modelId}. Check bone names and patterns.`
@@ -270,17 +282,8 @@ async function updateGLTFModel(context, sensorData, THREE) {
 		}
 	}
 
-	// Check if this is the first time we're processing this model
-	let debugEnabled = false;
-
-	try {
-		const unsubscribe = motionStore.debugMode.subscribe((value) => {
-			debugEnabled = value;
-		});
-		unsubscribe();
-	} catch (err) {
-		// Silent fail
-	}
+	// Check if this is the first time we're processing this model or if debug is enabled
+	let debugEnabled = motionStore.debugEnabled();
 
 	const shouldLogBones =
 		debugEnabled &&
@@ -293,15 +296,28 @@ async function updateGLTFModel(context, sensorData, THREE) {
 
 	// Use the pre-built mapping for efficiency
 	for (const sensor of sensors) {
-		if (!sensor.bodyPart) continue;
+		if (!sensor.bodyPart) {
+			if (debugEnabled && AnimationSystem.debugCounter === 0) {
+				console.warn(`Sensor ${sensor.index} has no bodyPart mapping`);
+			}
+			continue;
+		}
 
 		const matchingBones = boneMapping[sensor.bodyPart];
-		if (!matchingBones || matchingBones.length === 0) continue;
+		if (!matchingBones || matchingBones.length === 0) {
+			if (debugEnabled && AnimationSystem.debugCounter === 0) {
+				console.warn(`No bones found for bodyPart: ${sensor.bodyPart}`);
+			}
+			continue;
+		}
 
 		bonesFound.add(sensor.bodyPart);
 
 		// Validate sensor quaternion data
 		if (!Array.isArray(sensor.data) || sensor.data.length !== 4 || sensor.data.some(isNaN)) {
+			if (debugEnabled && AnimationSystem.debugCounter === 0) {
+				console.warn(`Invalid quaternion data for ${sensor.bodyPart}:`, sensor.data);
+			}
 			continue;
 		}
 
@@ -342,7 +358,7 @@ async function updateGLTFModel(context, sensorData, THREE) {
 		}
 	}
 
-	// Log any missing mappings
+	// Log any missing mappings during playback
 	if (debugEnabled && shouldLogBones) {
 		const missingSensors = sensors
 			.filter((s) => s.bodyPart && !bonesFound.has(s.bodyPart))

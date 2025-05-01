@@ -163,7 +163,7 @@ export function getSensorsWithData(sensorData) {
 			dataFormatCache.analyzed = true;
 		} else if (
 			typeof sensorData === 'object' &&
-			Object.keys(sensorData).some((k) => k.startsWith('S'))
+			Object.keys(sensorData).some((k) => k.startsWith('S') || k === 'sequence')
 		) {
 			if (isDebug) console.log('Detected direct sensor data format');
 			dataFormatCache.directFormat = true;
@@ -189,6 +189,14 @@ export function getSensorsWithData(sensorData) {
 		console.log(`Sample data format (${firstKey}):`, actualSensorData[firstKey]);
 
 		dataFormatCache.logged = true;
+	} else if (isDebug && sensorKeys.length === 0 && Object.keys(actualSensorData).length > 0) {
+		// This is a common issue during playback - help diagnose it
+		console.warn('No sensor keys found in data object with keys:', Object.keys(actualSensorData));
+
+		// If we have a sequence number, this is likely valid data but not in the expected format
+		if ('sequence' in actualSensorData) {
+			console.log('Data appears to have a sequence number but no sensor data');
+		}
 	}
 
 	// Filter for valid sensor data and map to structured objects
@@ -217,6 +225,11 @@ export function getSensorsWithData(sensorData) {
 				bodyPart
 			};
 		});
+
+	// Extra validation for playback
+	if (result.length === 0 && isDebug && 'sequence' in actualSensorData) {
+		console.warn('Zero sensors extracted from data with sequence:', actualSensorData.sequence);
+	}
 
 	return result;
 }

@@ -6,7 +6,7 @@
 		getCurrentCorrections,
 		adjustCorrection
 	} from '$lib/motion/transform.js';
-	import { showCalibration } from '$lib/stores/motionStore.js';
+	import { showCalibration, setCalibrationStatus } from '$lib/stores/motionStore.js';
 
 	// Props using Svelte 5 $props rune
 	let { sensorData = {}, isStreaming = false } = $props();
@@ -18,6 +18,11 @@
 		rotation: { x: 0, y: 0, z: 0 },
 		inversion: { x: 0, y: 0, z: 0 }
 	});
+
+	// Countdown state
+	let countdownActive = $state(false);
+	let countdown = $state(3);
+	let countdownInterval = $state(null);
 
 	// Supported body parts for calibration
 	const bodyParts = [
@@ -51,17 +56,59 @@
 		}
 	}
 
-	// Store T-pose calibration
+	// Store T-pose calibration with countdown
 	function captureTPose() {
 		if (!isStreaming || !sensorData) {
 			alert('Please ensure streaming is active before calibrating');
 			return;
 		}
 
-		const calibrationData = storeTposeCalibration(sensorData);
-		const sensorCount = Object.keys(calibrationData).length;
+		// Clear any existing countdown
+		if (countdownInterval) {
+			clearInterval(countdownInterval);
+		}
 
-		alert(`T-pose calibration captured with ${sensorCount} sensors!`);
+		// Start the countdown
+		countdownActive = true;
+		countdown = 3;
+
+		// Start countdown interval
+		countdownInterval = setInterval(() => {
+			countdown--;
+
+			if (countdown <= 0) {
+				// Clear the interval when countdown reaches zero
+				clearInterval(countdownInterval);
+				countdownInterval = null;
+				countdownActive = false;
+
+				// Execute the actual calibration after countdown
+				executeCalibration();
+			}
+		}, 1000);
+	}
+
+	// Actual calibration function
+	function executeCalibration() {
+		try {
+			console.log('Executing T-pose calibration with sensor data:', sensorData);
+
+			// Get current sensor data
+			const calibrationData = storeTposeCalibration(sensorData);
+			const sensorCount = Object.keys(calibrationData).length;
+
+			if (sensorCount > 0) {
+				// Update calibration status in store
+				setCalibrationStatus(true);
+				alert(`T-pose calibration captured with ${sensorCount} sensors!`);
+				console.log('Calibration results:', calibrationData);
+			} else {
+				alert('Calibration failed! No valid sensor data captured.');
+			}
+		} catch (error) {
+			console.error('Error during T-pose calibration:', error);
+			alert(`Calibration error: ${error.message}`);
+		}
 	}
 
 	// Reset all corrections to defaults
@@ -124,17 +171,24 @@
 				{isCalibrated() ? 'Calibrated ✓' : 'Not Calibrated'}
 			</p>
 			<p class="mt-1 text-xs text-gray-600">
-				Stand in T-pose (arms extended to sides) and click "Capture T-Pose" to calibrate.
+				Stand in T-pose (arms extended to sides) and click "Capture T-Pose". You'll have 3 seconds
+				to prepare.
 			</p>
 		</div>
+
+		{#if countdownActive}
+			<div class="mb-3 mt-3 rounded bg-yellow-100 p-3 text-center font-bold text-yellow-800">
+				Get ready for T-pose in: {countdown} seconds
+			</div>
+		{/if}
 
 		<div class="mt-3 flex gap-2">
 			<button
 				onclick={captureTPose}
-				disabled={!isStreaming}
+				disabled={!isStreaming || countdownActive}
 				class="rounded bg-blue-600 px-3 py-1.5 text-white hover:bg-blue-700 disabled:bg-blue-300"
 			>
-				Capture T-Pose
+				{countdownActive ? `Countdown: ${countdown}` : 'Capture T-Pose'}
 			</button>
 
 			<button
