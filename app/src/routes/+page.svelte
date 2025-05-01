@@ -17,7 +17,13 @@
 	} from '$lib/services/connectionService.js';
 
 	// Stores
-	import * as motionStore from '$lib/stores/motionStore.js';
+	import {
+		addRecordingFrame,
+		currentPlayback,
+		isRecording,
+		stopRecording
+	} from '$lib/stores/motionStore.js';
+
 	import {
 		connected,
 		connecting,
@@ -38,6 +44,14 @@
 
 	// UI state with Svelte 5 $state rune
 	let showConfiguration = $state(true);
+
+	// Monitor recording status to capture frames
+	$effect(() => {
+		if (isRecording && $sensorData && Object.keys($sensorData).length > 0) {
+			// Add current frame to recording
+			addRecordingFrame($sensorData);
+		}
+	});
 
 	// Debug store updates using $effect from Svelte 5
 	$effect(() => {
@@ -74,6 +88,11 @@
 		if (!$connected) return;
 
 		try {
+			// Make sure to stop any recordings first
+			if (get(isRecording)) {
+				stopRecording();
+			}
+
 			await disconnect();
 		} catch (error) {
 			alert('Disconnect error: ' + (error.message || error));
@@ -82,6 +101,17 @@
 
 	// Handle command
 	function handleCommand(command) {
+		// Add special handling for certain commands
+		if (command === 'S') {
+			// Clear packet count when starting streaming
+			resetPacketCount();
+		} else if (command === 'X') {
+			// Stop any active recording when stopping streaming
+			if (get(isRecording)) {
+				stopRecording();
+			}
+		}
+
 		return sendCommand(command);
 	}
 
@@ -130,6 +160,11 @@
 				}
 			}
 		}, 1000);
+	}
+
+	// Reset packet count
+	function resetPacketCount() {
+		dataPacketsReceived.set(0);
 	}
 
 	onMount(() => {
@@ -184,12 +219,13 @@
 						></span>
 						<span class="text-sm font-medium">{$connected ? 'Connected' : 'Disconnected'}</span>
 
-						{#if $connected && $isStreaming}
+						{#if ($connected && $isStreaming) || $currentPlayback}
 							<span
 								class="ml-2 flex items-center rounded bg-green-600 px-1.5 py-0.5 text-xs font-medium text-white"
 							>
 								<span class="mr-1 inline-block h-2 w-2 animate-pulse rounded-full bg-white"></span>
-								Streaming {$dataPacketsReceived > 0 ? `(${$dataPacketsReceived} packets)` : ''}
+								{$currentPlayback ? 'Playback' : 'Streaming'}
+								{$dataPacketsReceived > 0 ? `(${$dataPacketsReceived} packets)` : ''}
 							</span>
 						{/if}
 					</div>
@@ -274,7 +310,7 @@
 		<div class="w-1/4 overflow-y-auto bg-white p-4 shadow-md">
 			<CommandPanel
 				connected={$connected}
-				isStreaming={$isStreaming}
+				isStreaming={$isStreaming || $currentPlayback !== null}
 				onSendCommand={handleCommand}
 			/>
 		</div>
@@ -283,9 +319,12 @@
 			<h2 class="mb-2 font-semibold text-gray-800">Visualization</h2>
 
 			<div class="relative flex-1">
-				<SensorVisualization data={$sensorData} isConnected={$connected} />
+				<SensorVisualization
+					data={$sensorData}
+					isConnected={$connected || $currentPlayback !== null}
+				/>
 				<DebugInfo
-					isStreaming={$isStreaming}
+					isStreaming={$isStreaming || $currentPlayback !== null}
 					sensorData={$sensorData}
 					dataPacketsReceived={$dataPacketsReceived}
 				/>

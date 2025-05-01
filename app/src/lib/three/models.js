@@ -98,7 +98,9 @@ export async function createBasicModel(context) {
 
 	// Create a group to hold all model parts
 	const group = new THREE.Group();
-	group.position.set(0, 100, 0);
+
+	// Position the model above the floor - increased Y position to prevent clipping
+	group.position.set(0, 120, 0);
 
 	// Create torso
 	const torsoGeometry = new THREE.CylinderGeometry(15, 10, 40, 16);

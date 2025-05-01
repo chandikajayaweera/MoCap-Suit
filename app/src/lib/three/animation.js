@@ -3,6 +3,7 @@
 import { getTHREE } from './engine.js';
 import { findMatchingBone, getSensorsWithData, boneNamePatterns } from '$lib/motion/sensors.js';
 import * as motionStore from '$lib/stores/motionStore.js';
+import { correctQuaternion, applyCalibration, isCalibrated } from '$lib/motion/transform.js';
 
 // Animation mapping registry
 const AnimationSystem = {
@@ -160,12 +161,20 @@ async function updateBasicModel(context, sensorData, THREE) {
 				}
 
 				try {
-					// Create THREE.js quaternion from sensor data
+					// Apply transformations to the quaternion data
+					let transformedData = await correctQuaternion(sensor.data, sensor.bodyPart);
+
+					// Apply calibration if available
+					if (isCalibrated()) {
+						transformedData = await applyCalibration(transformedData, sensor.bodyPart);
+					}
+
+					// Create THREE.js quaternion from transformed data
 					const q = new THREE.Quaternion(
-						sensor.data[1], // x
-						sensor.data[2], // y
-						sensor.data[3], // z
-						sensor.data[0] // w
+						transformedData[1], // x
+						transformedData[2], // y
+						transformedData[3], // z
+						transformedData[0] // w
 					);
 
 					// Normalize quaternion
@@ -297,12 +306,20 @@ async function updateGLTFModel(context, sensorData, THREE) {
 		}
 
 		try {
-			// Create quaternion once for this sensor
+			// Apply transformations to the quaternion data
+			let transformedData = await correctQuaternion(sensor.data, sensor.bodyPart);
+
+			// Apply calibration if available
+			if (isCalibrated()) {
+				transformedData = await applyCalibration(transformedData, sensor.bodyPart);
+			}
+
+			// Create quaternion from transformed data
 			const q = new THREE.Quaternion(
-				sensor.data[1], // x
-				sensor.data[2], // y
-				sensor.data[3], // z
-				sensor.data[0] // w
+				transformedData[1], // x
+				transformedData[2], // y
+				transformedData[3], // z
+				transformedData[0] // w
 			).normalize();
 
 			// Update all mapped bones with this quaternion
@@ -498,10 +515,12 @@ export async function resetModelPose(context) {
 function resetManually(model) {
 	let bonesReset = 0;
 
+	// Preserve the original model position
+	const originalPosition = model.position.clone();
+
 	model.traverse((object) => {
 		if ('isBone' in object && object.isBone) {
-			// Reset position, rotation and scale
-			object.position.set(0, 0, 0);
+			// Reset rotation only, keep positions intact to maintain model structure
 			object.quaternion.identity();
 			object.scale.set(1, 1, 1);
 
@@ -515,4 +534,12 @@ function resetManually(model) {
 
 	// Update world matrices
 	model.updateMatrixWorld(true);
+
+	// Ensure the model doesn't sink into the floor
+	model.position.copy(originalPosition);
+
+	// Ensure the model stays at a proper height
+	if (model.position.y < 100) {
+		model.position.y = 120; // Keep model above floor
+	}
 }
