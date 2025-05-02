@@ -215,14 +215,12 @@
 		if (animationFrame) return;
 
 		function animate() {
-			frameCount++;
+			animationFrame = requestAnimationFrame(animate);
 
-			// Process data at appropriate intervals (every ~200ms)
-			if (initialized && sceneContext && data && frameCount % 12 === 0) {
+			// Process data only every 2-3 frames for better performance
+			if (frameCount++ % 3 === 0 && initialized && sceneContext && data) {
 				processSensorData();
 			}
-
-			animationFrame = requestAnimationFrame(animate);
 		}
 
 		animate();
