@@ -95,16 +95,20 @@
 
 			// Get current sensor data
 			const calibrationData = storeTposeCalibration(sensorData);
-			const sensorCount = Object.keys(calibrationData).length;
 
-			if (sensorCount > 0) {
-				// Update calibration status in store
-				setCalibrationStatus(true);
-				alert(`T-pose calibration captured with ${sensorCount} sensors!`);
-				console.log('Calibration results:', calibrationData);
-			} else {
-				alert('Calibration failed! No valid sensor data captured.');
-			}
+			// We can't check calibrationData immediately due to the async nature
+			// Instead, wait a moment and then check isCalibrated()
+			setTimeout(() => {
+				if (isCalibrated()) {
+					// Update calibration status in store
+					setCalibrationStatus(true);
+					alert(`T-pose calibration captured successfully!`);
+					console.log('Calibration complete - system is now calibrated');
+				} else {
+					alert('Calibration failed! No valid sensor data captured.');
+					console.error('Calibration failed - check sensor data');
+				}
+			}, 1000); // Wait for calibration to complete
 		} catch (error) {
 			console.error('Error during T-pose calibration:', error);
 			alert(`Calibration error: ${error.message}`);

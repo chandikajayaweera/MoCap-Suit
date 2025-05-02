@@ -6,7 +6,6 @@ import { getSensorsWithData } from './sensors.js';
 // These values are tuned for the specific IMU placement on each body segment
 export const DEFAULT_CORRECTIONS = {
 	RightUpperArm: {
-		// Based on the T-pose data where arms should be horizontal
 		rotationCorrection: [0, 90, 180],
 		axisInversion: [0, 0, 0]
 	},
@@ -98,8 +97,6 @@ export async function correctQuaternion(quaternionData, bodyPart) {
 		);
 		const correctionQuaternion = new THREE.Quaternion().setFromEuler(correctionEuler);
 
-		// Apply correction - try both multiplication orders if needed
-		// For BNO055 sensors, this order tends to work better
 		q.premultiply(correctionQuaternion);
 	}
 
@@ -157,33 +154,44 @@ export function storeTposeCalibration(sensorData) {
 
 	console.log(`Processing T-pose with ${sensors.length} sensors`);
 
-	// Store each sensor's quaternion data by body part
-	sensors.forEach((sensor) => {
+	const correctionPromises = sensors.map(async (sensor) => {
 		if (sensor.bodyPart && Array.isArray(sensor.data) && sensor.data.length === 4) {
 			// Validate quaternion data
 			if (!sensor.data.some(isNaN)) {
-				// Store a copy of the data to avoid reference issues
-				calibrationData.tPoseQuaternions[sensor.bodyPart] = [...sensor.data];
-				console.log(
-					`✓ Stored T-pose for ${sensor.bodyPart} (sensor S${sensor.index}): [${sensor.data.join(', ')}]`
-				);
+				try {
+					const correctedData = await correctQuaternion(sensor.data, sensor.bodyPart);
+
+					calibrationData.tPoseQuaternions[sensor.bodyPart] = [...correctedData];
+
+					console.log(
+						`✓ Stored T-pose for ${sensor.bodyPart} (sensor S${sensor.index}): [${correctedData.join(', ')}]`
+					);
+					return true;
+				} catch (error) {
+					console.error(`Error correcting quaternion for ${sensor.bodyPart}:`, error);
+					return false;
+				}
 			} else {
 				console.warn(`⚠ Invalid quaternion data for ${sensor.bodyPart}: ${sensor.data}`);
+				return false;
 			}
 		} else {
 			console.warn(`⚠ Sensor ${sensor.index} has invalid data or no body part mapping`);
+			return false;
 		}
 	});
 
-	// Verify we have enough data
-	const capturedCount = Object.keys(calibrationData.tPoseQuaternions).length;
-
-	if (capturedCount > 0) {
-		calibrationData.isCalibrated = true;
-		console.log(`✓ T-pose calibration complete with ${capturedCount} body parts`);
-	} else {
-		console.error('❌ T-pose calibration failed - no valid quaternions captured');
-	}
+	Promise.all(correctionPromises).then((results) => {
+		const successCount = results.filter(Boolean).length;
+		if (successCount > 0) {
+			calibrationData.isCalibrated = true;
+			console.log(
+				`✓ T-pose calibration complete with ${successCount}/${sensors.length} body parts`
+			);
+		} else {
+			console.error('❌ T-pose calibration failed - no valid quaternions captured');
+		}
+	});
 
 	return calibrationData.tPoseQuaternions;
 }
@@ -209,7 +217,6 @@ export async function applyCalibration(quaternionData, bodyPart) {
 
 	const THREE = await getTHREE();
 
-	// Get the inverse of the T-pose quaternion for this body part
 	const tPoseQ = calibrationData.tPoseQuaternions[bodyPart];
 
 	// Create quaternion from the T-pose data
@@ -220,7 +227,6 @@ export async function applyCalibration(quaternionData, bodyPart) {
 		tPoseQ[0] // w
 	).normalize();
 
-	// Compute inverse (conjugate) of T-pose quaternion
 	const invTpose = tPoseQuaternion.clone().invert();
 
 	// Create quaternion from the input data
@@ -232,7 +238,6 @@ export async function applyCalibration(quaternionData, bodyPart) {
 	).normalize();
 
 	// Apply the inverse T-pose quaternion to the input quaternion
-	// q_result = q_input * q_tpose_inverse (right multiply)
 	const resultQ = new THREE.Quaternion().multiplyQuaternions(inputQ, invTpose);
 
 	// Return as array in [w, x, y, z] format
