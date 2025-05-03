@@ -1,18 +1,12 @@
 <script>
-	import { onMount } from 'svelte';
+	let { logs = [], onClearLogs = () => {} } = $props();
 
-	// Props
-	let { logs = [] } = $props();
-
-	// Log filtering
 	let filterText = $state('');
 	let filterLevel = $state('all');
 	let autoscroll = $state(true);
 
-	// DOM reference to log container for autoscrolling
 	let logContainer;
 
-	// Filtered logs based on search text and level
 	const filteredLogs = $derived(
 		logs.filter((log) => {
 			const matchesText =
@@ -38,25 +32,34 @@
 		return date.toLocaleTimeString();
 	}
 
-	// Clear all logs
-	function clearLogs() {
-		logs = [];
+	function scrollToBottom() {
+		if (logContainer) {
+			logContainer.scrollTop = logContainer.scrollHeight;
+		}
 	}
 
-	// Handle scrolling using onMount and $effect
-	onMount(() => {
-		// Initial scroll
-		if (autoscroll && logContainer) {
-			logContainer.scrollTop = logContainer.scrollHeight;
+	$effect(() => {
+		if (autoscroll && logContainer && filteredLogs.length > 0) {
+			setTimeout(scrollToBottom, 10);
 		}
 	});
 
-	// Use $effect to handle autoscrolling when logs change or autoscroll changes
-	$effect(() => {
-		if (autoscroll && logContainer) {
-			logContainer.scrollTop = logContainer.scrollHeight;
+	function handleScroll() {
+		if (!logContainer) return;
+
+		const atBottom =
+			Math.abs(logContainer.scrollHeight - logContainer.clientHeight - logContainer.scrollTop) < 50; // Allow small margin of error
+
+		if (!atBottom && autoscroll) {
+			autoscroll = false;
 		}
-	});
+	}
+
+	function handleClear() {
+		if (typeof onClearLogs === 'function') {
+			onClearLogs();
+		}
+	}
 </script>
 
 <div class="flex h-full flex-col">
@@ -81,7 +84,7 @@
 			</select>
 
 			<button
-				onclick={clearLogs}
+				onclick={handleClear}
 				class="rounded bg-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400"
 			>
 				Clear
@@ -103,6 +106,7 @@
 	<!-- Log display -->
 	<div
 		bind:this={logContainer}
+		onscroll={handleScroll}
 		class="mb-4 flex-grow overflow-y-auto rounded bg-gray-50 p-2 font-mono text-xs shadow-inner"
 	>
 		{#if filteredLogs.length === 0}
