@@ -143,6 +143,7 @@ function handleSerialChunk(chunk) {
 function processBuffer() {
 	let processedUpTo = 0;
 
+	// Process DATA: packets
 	while (true) {
 		const dataStart = dataBuffer.indexOf('DATA:', processedUpTo);
 		if (dataStart === -1) break;
@@ -151,38 +152,29 @@ function processBuffer() {
 		if (nextDataStart === -1) break;
 
 		const packet = dataBuffer.slice(dataStart + 5, nextDataStart);
-
 		processSensorDataPacket(packet);
-
 		processedUpTo = nextDataStart;
 	}
 
-	// Handle case where we have QUAT_ or SEQ: without DATA: prefix
+	// Handle QUAT_ and SEQ: packets
 	if (processedUpTo === 0) {
 		const seqStart = dataBuffer.indexOf('SEQ:');
 		if (seqStart !== -1) {
-			// Look for end of this packet (newline or next sequence)
 			const nextSeqStart = dataBuffer.indexOf('SEQ:', seqStart + 4);
-
 			if (nextSeqStart !== -1) {
-				// We have a complete packet
 				const packet = dataBuffer.slice(seqStart, nextSeqStart);
 				processSensorDataPacket(packet);
 				processedUpTo = nextSeqStart;
 			}
 		}
 
-		// Look for QUAT_ marker
 		const quatStart = dataBuffer.indexOf('QUAT_');
 		if (quatStart !== -1 && (seqStart === -1 || quatStart < seqStart)) {
-			// Check if it's just a QUAT_ fragment
 			if (quatStart + 5 >= dataBuffer.length || dataBuffer.indexOf('SEQ:', quatStart) === -1) {
-				// Just a QUAT_ fragment, process it and then wait for more
 				const packet = dataBuffer.slice(quatStart, quatStart + 5);
 				processSensorDataPacket(packet);
 				processedUpTo = quatStart + 5;
 			} else {
-				// QUAT_ with SEQ data - find where it ends
 				const nextQuat = dataBuffer.indexOf('QUAT_', quatStart + 5);
 				const endPos = nextQuat !== -1 ? nextQuat : dataBuffer.length;
 				const packet = dataBuffer.slice(quatStart, endPos);
@@ -192,20 +184,50 @@ function processBuffer() {
 		}
 	}
 
+	// Process LOG: messages with improved multi-line handling
 	while (true) {
 		const logStart = dataBuffer.indexOf('LOG:', processedUpTo);
 		if (logStart === -1) break;
 
-		// Find the end of the log message (newline or next LOG:/DATA:)
-		let logEnd = dataBuffer.indexOf('\n', logStart);
-		const nextLogStart = dataBuffer.indexOf('LOG:', logStart + 4);
-		const nextDataStart = dataBuffer.indexOf('DATA:', logStart + 4);
+		// Instead of looking for just any newline, we need to find where this log
+		// message truly ends - at the next LOG: or DATA: that starts a new line
+		let logEnd = dataBuffer.length; // Default to end of buffer
 
-		if (logEnd === -1) logEnd = Infinity;
-		if (nextLogStart !== -1 && nextLogStart < logEnd) logEnd = nextLogStart;
-		if (nextDataStart !== -1 && nextDataStart < logEnd) logEnd = nextDataStart;
+		// Search for the next LOG: or DATA: that's at the beginning of a line
+		for (let pos = logStart + 4; pos < dataBuffer.length; pos++) {
+			// Check if this position could be the start of a new log
+			if (
+				(dataBuffer[pos] === 'L'.charCodeAt(0) &&
+					pos + 3 < dataBuffer.length &&
+					dataBuffer[pos + 1] === 'O'.charCodeAt(0) &&
+					dataBuffer[pos + 2] === 'G'.charCodeAt(0) &&
+					dataBuffer[pos + 3] === ':'.charCodeAt(0)) ||
+				(dataBuffer[pos] === 'D'.charCodeAt(0) &&
+					pos + 4 < dataBuffer.length &&
+					dataBuffer[pos + 1] === 'A'.charCodeAt(0) &&
+					dataBuffer[pos + 2] === 'T'.charCodeAt(0) &&
+					dataBuffer[pos + 3] === 'A'.charCodeAt(0) &&
+					dataBuffer[pos + 4] === ':'.charCodeAt(0))
+			) {
+				// Only consider it a log boundary if it's at the start of a line
+				// Check if it's preceded by a newline or is at the beginning
+				if (pos === 0 || dataBuffer[pos - 1] === '\n'.charCodeAt(0)) {
+					logEnd = pos;
+					break;
+				}
+			}
+		}
 
-		if (logEnd === Infinity) break;
+		// If we couldn't find a definite end and the buffer is getting large,
+		// process what we have so far to avoid memory issues
+		if (logEnd === dataBuffer.length && logEnd - logStart > 10000) {
+			logEnd = logStart + 10000; // Process 10KB chunks at most
+		}
+
+		// If we still don't have a definite end, wait for more data
+		if (logEnd === dataBuffer.length) {
+			break;
+		}
 
 		const logMessage = dataBuffer
 			.slice(logStart + 4, logEnd)
@@ -226,8 +248,7 @@ function processBuffer() {
 		dataBuffer = dataBuffer.slice(processedUpTo);
 	}
 
-	// If buffer is getting too large without successful processing,
-	// it might indicate a protocol issue - truncate it as a safety measure
+	// Safety limit for buffer size
 	if (dataBuffer.length > 10000) {
 		console.warn(`Data buffer too large (${dataBuffer.length} bytes), truncating`);
 		dataBuffer = dataBuffer.slice(dataBuffer.length - 1000);

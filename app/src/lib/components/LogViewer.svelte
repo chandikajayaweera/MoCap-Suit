@@ -48,7 +48,8 @@
 		if (!logContainer) return;
 
 		const atBottom =
-			Math.abs(logContainer.scrollHeight - logContainer.clientHeight - logContainer.scrollTop) < 50; // Allow small margin of error
+			Math.abs(logContainer.scrollHeight - logContainer.clientHeight - logContainer.scrollTop) <
+			300;
 
 		if (!atBottom && autoscroll) {
 			autoscroll = false;
@@ -59,6 +60,36 @@
 		if (typeof onClearLogs === 'function') {
 			onClearLogs();
 		}
+	}
+
+	function isSensorMessage(message) {
+		return message.includes('Command successful:') && message.includes('Sensor ');
+	}
+
+	function isLogGroupMessage(message) {
+		return message.includes('LOG:') && message.split('LOG:').length > 2;
+	}
+
+	function parseSensorData(message) {
+		if (!isSensorMessage(message)) return null;
+
+		const parts = message.split('Sensor ');
+		const prefix = parts[0];
+		const sensors = parts.slice(1).map((part) => 'Sensor ' + part.trim());
+
+		return {
+			prefix,
+			sensors
+		};
+	}
+
+	function parseLogGroup(message) {
+		if (!isLogGroupMessage(message)) return null;
+
+		return message
+			.split('LOG:')
+			.filter((part) => part.trim().length > 0)
+			.map((part) => 'LOG:' + part.trim());
 	}
 </script>
 
@@ -113,9 +144,25 @@
 			<div class="italic text-gray-500">No logs to display.</div>
 		{:else}
 			{#each filteredLogs as log}
-				<div class="mb-1 leading-tight">
-					<span class="text-gray-500">[{formatTimestamp(log.timestamp)}]</span>
-					<span class={getLogStyle(log.message)}>{log.message}</span>
+				<div class={getLogStyle(log.message)}>
+					<div class="mb-1 leading-normal">
+						<span class="text-gray-500">[{formatTimestamp(log.timestamp)}]</span>
+
+						{#if isSensorMessage(log.message)}
+							{@const sensorData = parseSensorData(log.message)}
+							<span>{sensorData.prefix}</span>
+							{#each sensorData.sensors as sensor, i}
+								<div class="ml-4 mt-2">{sensor}</div>
+							{/each}
+						{:else if isLogGroupMessage(log.message)}
+							{@const logGroups = parseLogGroup(log.message)}
+							{#each logGroups as logMsg, i}
+								<div class={i > 0 ? 'mt-2' : ''}>{logMsg}</div>
+							{/each}
+						{:else}
+							<span>{log.message}</span>
+						{/if}
+					</div>
 				</div>
 			{/each}
 		{/if}
