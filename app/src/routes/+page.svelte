@@ -1,29 +1,22 @@
 <script>
 	import { onMount } from 'svelte';
 	import { get } from 'svelte/store';
-
-	// UI Components
 	import CommandPanel from '$lib/components/CommandPanel.svelte';
 	import LogViewer from '$lib/components/LogViewer.svelte';
 	import SensorVisualization from '$lib/components/visualization/SensorVisualization.svelte';
 	import DebugInfo from '$lib/components/DebugInfo.svelte';
-
-	// Services
 	import {
 		connect,
 		disconnect,
 		sendCommand,
 		loadAvailablePorts
 	} from '$lib/services/connectionService.js';
-
-	// Stores
 	import {
 		addRecordingFrame,
 		currentPlayback,
 		isRecording,
 		stopRecording
 	} from '$lib/stores/motionStore.js';
-
 	import {
 		connected,
 		connecting,
@@ -42,24 +35,17 @@
 		sensorData
 	} from '$lib/stores/connectionStore.js';
 
-	// UI state with Svelte 5 $state rune
 	let showConfiguration = $state(true);
 
-	// Monitor recording status to capture frames
 	$effect(() => {
 		if (isRecording && $sensorData && Object.keys($sensorData).length > 0) {
-			// Add current frame to recording
 			addRecordingFrame($sensorData);
 		}
 	});
 
-	// Debug store updates using $effect from Svelte 5
 	$effect(() => {
-		// Using $sensorData to access the store value
 		if ($sensorData && Object.keys($sensorData).length > 0) {
-			// Type-safe check for sequence property
 			if ('sequence' in $sensorData && typeof $sensorData.sequence === 'number') {
-				// Log occasionally for monitoring
 				if ($sensorData.sequence % 100 === 0) {
 					console.log(`Page sensor data updated: seq=${$sensorData.sequence}`);
 				}
@@ -67,7 +53,6 @@
 		}
 	});
 
-	// Handle connection
 	async function handleConnect() {
 		if ($connecting || $connected) return;
 
@@ -83,12 +68,10 @@
 		}
 	}
 
-	// Handle disconnection
 	async function handleDisconnect() {
 		if (!$connected) return;
 
 		try {
-			// Make sure to stop any recordings first
 			if (get(isRecording)) {
 				stopRecording();
 			}
@@ -99,14 +82,10 @@
 		}
 	}
 
-	// Handle command
 	function handleCommand(command) {
-		// Add special handling for certain commands
 		if (command === 'S') {
-			// Clear packet count when starting streaming
 			resetPacketCount();
 		} else if (command === 'X') {
-			// Stop any active recording when stopping streaming
 			if (get(isRecording)) {
 				stopRecording();
 			}
@@ -115,14 +94,12 @@
 		return sendCommand(command);
 	}
 
-	// Fetch available ports
 	async function fetchPorts() {
 		setLoadingPorts(true);
 		try {
 			const ports = await loadAvailablePorts();
 			setAvailablePorts(ports);
 
-			// Update port selection logic
 			if ($portChangeDetected && $serialPort) {
 				const newPortInList = ports.some((p) => p.path === $serialPort);
 				if (!newPortInList && ports.length > 0) {
@@ -138,7 +115,6 @@
 		}
 	}
 
-	// Check streaming timeout periodically
 	function checkStreamingTimeout() {
 		let lastTimestamp = 0;
 
@@ -147,7 +123,6 @@
 				const now = Date.now();
 				const timeSinceLastData = now - lastTimestamp;
 
-				// If no data for 10 seconds while streaming is supposedly active
 				if (timeSinceLastData > 10000) {
 					isStreaming.set(false);
 					logs.update((currentLogs) => [
@@ -162,7 +137,6 @@
 		}, 1000);
 	}
 
-	// Reset packet count
 	function resetPacketCount() {
 		dataPacketsReceived.set(0);
 	}
@@ -170,7 +144,6 @@
 	onMount(() => {
 		fetchPorts();
 
-		// Set up interval to check if streaming has silently stopped
 		const interval = checkStreamingTimeout();
 
 		return () => {

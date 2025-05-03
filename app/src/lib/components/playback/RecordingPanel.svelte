@@ -13,15 +13,12 @@
 		sensorData
 	} from '$lib/stores/motionStore.js';
 
-	// Props using Svelte 5 $props rune
 	let { isConnected = false, isStreaming = false } = $props();
 
-	// Local state with Svelte 5 $state rune
 	let selectedRecording = $state(null);
 	let playbackInterval = $state(null);
 	let recordingName = $state('');
 
-	// Format time in mm:ss format
 	function formatTime(ms) {
 		const totalSeconds = Math.floor(ms / 1000);
 		const minutes = Math.floor(totalSeconds / 60);
@@ -29,7 +26,6 @@
 		return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
 	}
 
-	// Start recording with custom name
 	function handleStartRecording() {
 		startRecording();
 		if (recordingName) {
@@ -38,7 +34,6 @@
 		recordingName = '';
 	}
 
-	// Start playback of selected recording
 	function handlePlayRecording() {
 		if (!selectedRecording) return;
 
@@ -47,12 +42,11 @@
 
 		playRecording(selectedRecording);
 
-		// Set up interval for playback
 		if (playbackInterval) clearInterval(playbackInterval);
 
 		let currentFrameIndex = 0;
 		const startTime = Date.now();
-		const frameRate = 16; // ~60fps - match this to your recording rate
+		const frameRate = 16;
 
 		console.log(
 			`Starting playback of recording: ${recording.name} with ${recording.frames.length} frames`
@@ -61,7 +55,6 @@
 		playbackInterval = setInterval(() => {
 			const elapsed = Date.now() - startTime;
 
-			// Find frame based on elapsed time
 			while (
 				currentFrameIndex < recording.frames.length - 1 &&
 				recording.frames[currentFrameIndex + 1].relativeTime <= elapsed
@@ -70,31 +63,23 @@
 			}
 
 			if (currentFrameIndex >= recording.frames.length) {
-				// We've reached the end of the recording
 				clearInterval(playbackInterval);
 				playbackInterval = null;
 				playbackProgress.set(1);
 
-				// Reset after 500ms
 				setTimeout(() => {
 					stopPlayback();
 				}, 500);
 				return;
 			}
 
-			// Get the current frame's data
 			const frame = recording.frames[currentFrameIndex];
-
-			// CRITICAL: Ensure we're passing a new object to trigger reactivity and properly format data
-			// This is a key fix for the playback issue
 			const frameData = { ...frame.data };
 
-			// Add a sequence number if missing to ensure proper processing
 			if (!frameData.sequence) {
 				frameData.sequence = currentFrameIndex;
 			}
 
-			// Debug the frame data to help diagnose issues
 			if (currentFrameIndex % 30 === 0) {
 				console.log(`Playback frame ${currentFrameIndex}/${recording.frames.length}`, {
 					elapsed: elapsed,
@@ -103,15 +88,12 @@
 				});
 			}
 
-			// Update sensorData with current frame - this is what drives the visualization
 			sensorData.set(frameData);
 
-			// Update progress
 			playbackProgress.set(elapsed / recording.duration);
 		}, frameRate);
 	}
 
-	// Stop current playback
 	function handleStopPlayback() {
 		if (playbackInterval) {
 			clearInterval(playbackInterval);
@@ -120,32 +102,26 @@
 		stopPlayback();
 	}
 
-	// Delete a recording
 	function handleDeleteRecording(id) {
 		if (confirm('Are you sure you want to delete this recording?')) {
-			// Stop playback if this recording is playing
 			if ($currentPlayback && $currentPlayback.id === id) {
 				handleStopPlayback();
 			}
 
-			// Remove from list
 			recordedAnimations.update((recordings) => recordings.filter((r) => r.id !== id));
 
-			// Clear selection if deleted
 			if (selectedRecording === id) {
 				selectedRecording = null;
 			}
 		}
 	}
 
-	// Update recording frame on new data
 	$effect(() => {
 		if ($isRecording && $sensorData) {
 			addRecordingFrame($sensorData);
 		}
 	});
 
-	// Cleanup on component destroy
 	onDestroy(() => {
 		if (playbackInterval) {
 			clearInterval(playbackInterval);

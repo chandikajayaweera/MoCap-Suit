@@ -1,8 +1,6 @@
 <script>
-	// Props using Svelte 5 $props rune
 	let { connected = false, isStreaming = false, onSendCommand = () => {} } = $props();
 
-	// Command definitions with better streaming control logic
 	const commands = [
 		{
 			id: 'S',
@@ -10,7 +8,6 @@
 			description: 'Start sensor data streaming',
 			category: 'streaming',
 			confirm: false,
-			// Only enable when not streaming
 			isDisabled: (connected, streaming) => !connected || streaming,
 			highlight: false
 		},
@@ -20,7 +17,6 @@
 			description: 'Stop sensor data streaming',
 			category: 'streaming',
 			confirm: false,
-			// Only enable when streaming
 			isDisabled: (connected, streaming) => !connected || !streaming,
 			highlight: true
 		},
@@ -30,7 +26,6 @@
 			description: 'Restart the sensor node',
 			category: 'system',
 			confirm: true,
-			// Disable during streaming
 			isDisabled: (connected, streaming) => !connected || streaming
 		},
 		{
@@ -39,7 +34,6 @@
 			description: 'Restart the receiver',
 			category: 'system',
 			confirm: true,
-			// Disable during streaming
 			isDisabled: (connected, streaming) => !connected || streaming
 		},
 		{
@@ -48,7 +42,6 @@
 			description: 'Check sensor status',
 			category: 'sensors',
 			confirm: false,
-			// Disable during streaming
 			isDisabled: (connected, streaming) => !connected || streaming
 		},
 		{
@@ -57,7 +50,6 @@
 			description: 'Reinitialize all sensors',
 			category: 'sensors',
 			confirm: false,
-			// Disable during streaming
 			isDisabled: (connected, streaming) => !connected || streaming
 		},
 		{
@@ -66,7 +58,6 @@
 			description: 'Ping the node to check connection',
 			category: 'system',
 			confirm: false,
-			// Always enabled when connected
 			isDisabled: (connected) => !connected
 		},
 		{
@@ -75,7 +66,6 @@
 			description: 'Set log level to DEBUG (most verbose)',
 			category: 'logging',
 			confirm: false,
-			// Always enabled when connected
 			isDisabled: (connected) => !connected
 		},
 		{
@@ -84,7 +74,6 @@
 			description: 'Set log level to INFO (normal)',
 			category: 'logging',
 			confirm: false,
-			// Always enabled when connected
 			isDisabled: (connected) => !connected
 		},
 		{
@@ -93,7 +82,6 @@
 			description: 'Set log level to WARNING (less verbose)',
 			category: 'logging',
 			confirm: false,
-			// Always enabled when connected
 			isDisabled: (connected) => !connected
 		},
 		{
@@ -102,7 +90,6 @@
 			description: 'Set log level to ERROR (critical only)',
 			category: 'logging',
 			confirm: false,
-			// Always enabled when connected
 			isDisabled: (connected) => !connected
 		},
 		{
@@ -111,12 +98,10 @@
 			description: 'Shutdown the receiver',
 			category: 'system',
 			confirm: true,
-			// Disable during streaming
 			isDisabled: (connected, streaming) => !connected || streaming
 		}
 	];
 
-	// Reactive grouping by category using $derived
 	const commandsByCategory = $derived(
 		commands.reduce((acc, cmd) => {
 			(acc[cmd.category] ||= []).push(cmd);
@@ -124,22 +109,18 @@
 		}, {})
 	);
 
-	// Handle command click with Svelte 5 event syntax
 	function handleCommand(id) {
 		if (!connected) return;
 
 		const cmd = commands.find((c) => c.id === id);
 		if (!cmd) return;
 
-		// Check if command is disabled
 		if (cmd.isDisabled(connected, isStreaming)) return;
 
-		// Confirm if needed
 		if (cmd.confirm && !confirm(`Are you sure you want to ${cmd.label.toLowerCase()}?`)) {
 			return;
 		}
 
-		// Call the handler
 		if (typeof onSendCommand === 'function') {
 			onSendCommand(id);
 		}

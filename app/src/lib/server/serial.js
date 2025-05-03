@@ -2,7 +2,6 @@
 import { SerialPort } from 'serialport';
 import { broadcast } from './webSocket.js';
 
-// Store global references
 global.serialPort = null;
 global.originalPortPath = null;
 global.lastBaudRate = 115200;
@@ -13,9 +12,6 @@ let dataBuffer = Buffer.alloc(0);
 
 let debugLogging = false;
 
-/**
- * Enable or disable debug logging
- */
 export function setDebugLogging(enabled) {
 	debugLogging = enabled;
 	console.log(`Debug logging ${enabled ? 'enabled' : 'disabled'}`);
@@ -24,9 +20,6 @@ export function setDebugLogging(enabled) {
 // Buffer to collect partial QUAT_ messages
 let quatBuffer = '';
 
-/**
- * Connect to serial port
- */
 export async function connectToSerialPort(options) {
 	try {
 		// Store original port for reconnection logic
@@ -111,9 +104,6 @@ export async function connectToSerialPort(options) {
 	}
 }
 
-/**
- * Disconnect from serial port
- */
 export async function disconnectFromSerialPort() {
 	stopPortMonitoring();
 
@@ -144,47 +134,31 @@ export async function disconnectFromSerialPort() {
 	});
 }
 
-/**
- * Handle incoming data chunk from serial port
- * This uses a buffer-based approach similar to the benchmark script
- */
 function handleSerialChunk(chunk) {
-	// Append new data to our buffer
 	dataBuffer = Buffer.concat([dataBuffer, chunk]);
 
-	// Process all complete packets in the buffer
 	processBuffer();
 }
 
-/**
- * Process the data buffer for complete packets
- */
 function processBuffer() {
 	let processedUpTo = 0;
 
-	// Process DATA packets
 	while (true) {
-		// Look for DATA: marker
 		const dataStart = dataBuffer.indexOf('DATA:', processedUpTo);
 		if (dataStart === -1) break;
 
-		// Look for the start of the next packet
 		const nextDataStart = dataBuffer.indexOf('DATA:', dataStart + 5);
-		if (nextDataStart === -1) break; // Incomplete packet, wait for more data
+		if (nextDataStart === -1) break;
 
-		// Extract the complete packet
 		const packet = dataBuffer.slice(dataStart + 5, nextDataStart);
 
-		// Process the packet
 		processSensorDataPacket(packet);
 
-		// Move the processed pointer
 		processedUpTo = nextDataStart;
 	}
 
 	// Handle case where we have QUAT_ or SEQ: without DATA: prefix
 	if (processedUpTo === 0) {
-		// Look for sequence data
 		const seqStart = dataBuffer.indexOf('SEQ:');
 		if (seqStart !== -1) {
 			// Look for end of this packet (newline or next sequence)
@@ -218,7 +192,6 @@ function processBuffer() {
 		}
 	}
 
-	// Process LOG messages
 	while (true) {
 		const logStart = dataBuffer.indexOf('LOG:', processedUpTo);
 		if (logStart === -1) break;
@@ -228,20 +201,17 @@ function processBuffer() {
 		const nextLogStart = dataBuffer.indexOf('LOG:', logStart + 4);
 		const nextDataStart = dataBuffer.indexOf('DATA:', logStart + 4);
 
-		// Choose the closest endpoint
 		if (logEnd === -1) logEnd = Infinity;
 		if (nextLogStart !== -1 && nextLogStart < logEnd) logEnd = nextLogStart;
 		if (nextDataStart !== -1 && nextDataStart < logEnd) logEnd = nextDataStart;
 
-		if (logEnd === Infinity) break; // No complete log message yet
+		if (logEnd === Infinity) break;
 
-		// Extract the log message
 		const logMessage = dataBuffer
 			.slice(logStart + 4, logEnd)
 			.toString()
 			.trim();
 
-		// Process the log message
 		if (logMessage) {
 			broadcast({
 				type: 'log',
@@ -249,11 +219,9 @@ function processBuffer() {
 			});
 		}
 
-		// Move the processed pointer
 		processedUpTo = logEnd;
 	}
 
-	// Keep only unprocessed data in the buffer
 	if (processedUpTo > 0) {
 		dataBuffer = dataBuffer.slice(processedUpTo);
 	}
@@ -266,31 +234,23 @@ function processBuffer() {
 	}
 }
 
-/**
- * Process a single sensor data packet
- */
 function processSensorDataPacket(packet) {
 	try {
-		// Convert to string for parsing
 		const data = packet.toString().trim();
 
-		// Skip empty packets
 		if (!data) return;
 
-		// Check if this is a partial QUAT_ message
 		if (data === 'QUAT_') {
 			quatBuffer = data;
-			return; // Wait for the rest of the message
+			return;
 		}
 
-		// If we have a buffered QUAT_ prefix and current packet has SEQ data, combine them
 		let processedData = data;
 		if (quatBuffer === 'QUAT_' && data.startsWith('SEQ:')) {
 			processedData = quatBuffer + data;
-			quatBuffer = ''; // Reset buffer
+			quatBuffer = '';
 		}
 
-		// Parse packets with quaternion data
 		if (processedData.includes('QUAT_DATA:') || processedData.includes('SEQ:')) {
 			const cleanData = extractQuatData(processedData);
 			if (cleanData) {
@@ -298,7 +258,6 @@ function processSensorDataPacket(packet) {
 				const sensorCount = Object.keys(sensorData).filter((k) => k.startsWith('S')).length;
 
 				if (sensorCount > 0 || sensorData.sequence !== undefined) {
-					// Only log if debug logging is enabled or it's a milestone sequence
 					if (debugLogging && sensorData.sequence % 25 === 0) {
 						console.log(
 							`Broadcasting sensor data with ${sensorCount} sensors, seq: ${sensorData.sequence}`
@@ -313,14 +272,11 @@ function processSensorDataPacket(packet) {
 						}
 					});
 
-					// Don't log every sensor packet to reduce system log noise
 					return;
 				}
 			}
 		}
 
-		// If it's not sensor data or if data parse failed, treat as log
-		// but only if it's not just noise
 		if (processedData !== 'QUAT_' && !processedData.startsWith('SEQ:')) {
 			if (debugLogging) {
 				console.log(`Broadcasting unknown data: ${processedData.substring(0, 50)}...`);
@@ -335,9 +291,6 @@ function processSensorDataPacket(packet) {
 	}
 }
 
-/**
- * Extract quaternion data from a mixed message
- */
 function extractQuatData(data) {
 	if (data.startsWith('QUAT_DATA:')) {
 		return data.substring('QUAT_DATA:'.length).trim();
@@ -351,12 +304,9 @@ function extractQuatData(data) {
 			return data.substring(seqIndex).trim();
 		}
 	}
-	return data; // Try to parse as-is if no prefix found
+	return data;
 }
 
-/**
- * Parse quaternion sensor data
- */
 function parseSensorData(data) {
 	const result = {};
 
@@ -435,9 +385,6 @@ function fastSplit(str) {
 	return result;
 }
 
-/**
- * Check if the port has changed and update accordingly
- */
 async function checkForPortChange() {
 	if (!global.serialPort || !global.serialPort.isOpen || !global.originalPortPath) {
 		return null;
@@ -452,7 +399,6 @@ async function checkForPortChange() {
 				`Current port ${global.serialPort.path} no longer found. Looking for relocated device...`
 			);
 
-			// Find port with similar characteristics
 			const originalPortInfo = ports.find((p) => p.path === global.originalPortPath);
 
 			if (!originalPortInfo) {
@@ -495,9 +441,6 @@ async function checkForPortChange() {
 	return null;
 }
 
-/**
- * Start monitoring for port changes
- */
 export function startPortMonitoring() {
 	if (portMonitorInterval || !global.serialPort || !global.serialPort.isOpen) {
 		return;
@@ -537,9 +480,6 @@ export function startPortMonitoring() {
 	}, 2000);
 }
 
-/**
- * Stop port monitoring
- */
 export function stopPortMonitoring() {
 	if (portMonitorInterval) {
 		clearInterval(portMonitorInterval);
@@ -547,9 +487,6 @@ export function stopPortMonitoring() {
 	}
 }
 
-/**
- * List available serial ports
- */
 export async function listSerialPorts() {
 	try {
 		return await SerialPort.list();
@@ -559,9 +496,6 @@ export async function listSerialPorts() {
 	}
 }
 
-/**
- * Send command to serial port
- */
 export function sendCommand(command) {
 	if (!global.serialPort || !global.serialPort.isOpen) {
 		console.error('Cannot send command: Port not open');

@@ -1,16 +1,12 @@
 <script>
-	// Props using the $props rune for Svelte 5
 	let { logs = [], onClearLogs = () => {} } = $props();
 
-	// Log filtering with Svelte 5 $state rune
 	let filterText = $state('');
 	let filterLevel = $state('all');
 	let autoscroll = $state(true);
 
-	// DOM reference to log container for autoscrolling
 	let logContainer;
 
-	// Filtered logs based on search text and level using $derived rune
 	const filteredLogs = $derived(
 		logs.filter((log) => {
 			const matchesText =
@@ -25,7 +21,6 @@
 		})
 	);
 
-	// Style helper functions
 	function getLogStyle(message) {
 		if (message.includes('[ERROR]')) return 'text-red-600';
 		if (message.includes('[WARNING]')) return 'text-yellow-600';
@@ -37,37 +32,29 @@
 		return date.toLocaleTimeString();
 	}
 
-	// Function to scroll to bottom
 	function scrollToBottom() {
 		if (logContainer) {
 			logContainer.scrollTop = logContainer.scrollHeight;
 		}
 	}
 
-	// Watch for changes to logs or autoscroll setting using $effect
 	$effect(() => {
-		// This effect will run whenever filteredLogs or autoscroll changes
 		if (autoscroll && logContainer && filteredLogs.length > 0) {
-			// Use a small timeout to ensure DOM updates first
 			setTimeout(scrollToBottom, 10);
 		}
 	});
 
-	// Monitor autoscroll manually when user scrolls
 	function handleScroll() {
 		if (!logContainer) return;
 
-		// Check if user has manually scrolled up
 		const atBottom =
 			Math.abs(logContainer.scrollHeight - logContainer.clientHeight - logContainer.scrollTop) < 50; // Allow small margin of error
 
-		// Only change autoscroll if user has scrolled and it doesn't match current setting
 		if (!atBottom && autoscroll) {
 			autoscroll = false;
 		}
 	}
 
-	// Handle clear button click using Svelte 5 syntax
 	function handleClear() {
 		if (typeof onClearLogs === 'function') {
 			onClearLogs();

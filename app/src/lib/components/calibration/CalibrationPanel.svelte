@@ -8,10 +8,8 @@
 	} from '$lib/motion/transform.js';
 	import { showCalibration, setCalibrationStatus } from '$lib/stores/motionStore.js';
 
-	// Props using Svelte 5 $props rune
 	let { sensorData = {}, isStreaming = false } = $props();
 
-	// Local state using Svelte 5 $state rune
 	let selectedBodyPart = $state('RightUpperArm');
 	let showAdjustments = $state(false);
 	let adjustmentValues = $state({
@@ -19,12 +17,10 @@
 		inversion: { x: 0, y: 0, z: 0 }
 	});
 
-	// Countdown state
 	let countdownActive = $state(false);
 	let countdown = $state(3);
 	let countdownInterval = $state(null);
 
-	// Supported body parts for calibration
 	const bodyParts = [
 		{ id: 'RightUpperArm', label: 'Right Upper Arm' },
 		{ id: 'RightLowerArm', label: 'Right Lower Arm' },
@@ -36,7 +32,6 @@
 		{ id: 'LeftLowerLeg', label: 'Left Lower Leg' }
 	];
 
-	// Update adjustment values from loaded corrections
 	function updateAdjustmentValues() {
 		const currentCorrections = getCurrentCorrections();
 		if (currentCorrections[selectedBodyPart]) {
@@ -56,51 +51,37 @@
 		}
 	}
 
-	// Store T-pose calibration with countdown
 	function captureTPose() {
 		if (!isStreaming || !sensorData) {
 			alert('Please ensure streaming is active before calibrating');
 			return;
 		}
 
-		// Clear any existing countdown
 		if (countdownInterval) {
 			clearInterval(countdownInterval);
 		}
 
-		// Start the countdown
 		countdownActive = true;
 		countdown = 3;
 
-		// Start countdown interval
 		countdownInterval = setInterval(() => {
 			countdown--;
 
 			if (countdown <= 0) {
-				// Clear the interval when countdown reaches zero
 				clearInterval(countdownInterval);
 				countdownInterval = null;
 				countdownActive = false;
-
-				// Execute the actual calibration after countdown
 				executeCalibration();
 			}
 		}, 1000);
 	}
 
-	// Actual calibration function
 	function executeCalibration() {
 		try {
 			console.log('Executing T-pose calibration with sensor data:', sensorData);
-
-			// Get current sensor data
 			const calibrationData = storeTposeCalibration(sensorData);
-
-			// We can't check calibrationData immediately due to the async nature
-			// Instead, wait a moment and then check isCalibrated()
 			setTimeout(() => {
 				if (isCalibrated()) {
-					// Update calibration status in store
 					setCalibrationStatus(true);
 					alert(`T-pose calibration captured successfully!`);
 					console.log('Calibration complete - system is now calibrated');
@@ -108,14 +89,12 @@
 					alert('Calibration failed! No valid sensor data captured.');
 					console.error('Calibration failed - check sensor data');
 				}
-			}, 1000); // Wait for calibration to complete
+			}, 1000);
 		} catch (error) {
 			console.error('Error during T-pose calibration:', error);
 			alert(`Calibration error: ${error.message}`);
 		}
 	}
-
-	// Reset all corrections to defaults
 	function handleResetCorrections() {
 		if (confirm('Reset all sensor corrections to default values?')) {
 			resetCorrections();
@@ -123,33 +102,28 @@
 		}
 	}
 
-	// Apply rotation adjustment
 	function applyRotationAdjustment(axis, value) {
 		const axisIndex = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
 		adjustCorrection(selectedBodyPart, 'rotationCorrection', axisIndex, parseFloat(value));
 	}
 
-	// Apply axis inversion
 	function applyInversionAdjustment(axis, value) {
 		const axisIndex = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
 		adjustCorrection(selectedBodyPart, 'axisInversion', axisIndex, value ? 1 : 0);
 	}
 
-	// Event handler for input changes
 	function handleRotationChange(axis, event) {
 		if (event.currentTarget instanceof HTMLInputElement) {
 			applyRotationAdjustment(axis, event.currentTarget.value);
 		}
 	}
 
-	// Event handler for checkbox changes
 	function handleInversionChange(axis, event) {
 		if (event.currentTarget instanceof HTMLInputElement) {
 			applyInversionAdjustment(axis, event.currentTarget.checked);
 		}
 	}
 
-	// Watch for body part changes to update UI
 	$effect(() => {
 		if (selectedBodyPart) {
 			updateAdjustmentValues();

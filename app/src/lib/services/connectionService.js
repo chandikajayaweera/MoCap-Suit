@@ -23,9 +23,6 @@ let reconnectTimer = null;
 let heartbeatInterval = null;
 let lastHeartbeatResponse = 0;
 
-/**
- * Connect to serial port
- */
 export async function connect(port, baudRate = 115200) {
 	if (!port) {
 		throw new Error('Port is required');
@@ -62,26 +59,19 @@ export async function connect(port, baudRate = 115200) {
 	}
 }
 
-/**
- * Disconnect from serial port
- */
 export async function disconnect() {
-	// Check if streaming is active, send stop command first
 	try {
 		const streamingActive = await isStreamingActive();
 		if (streamingActive) {
 			console.log('Streaming is active, sending stop command before disconnecting');
 			await sendCommand('X');
 
-			// Give a short delay for the stop command to take effect
 			await new Promise((resolve) => setTimeout(resolve, 500));
 		}
 	} catch (error) {
 		console.warn('Error checking streaming status:', error);
-		// Continue with disconnect anyway
 	}
 
-	// Now perform the actual disconnect
 	cleanupWebSocket();
 
 	const response = await fetch('/api/disconnect', { method: 'POST' });
@@ -98,13 +88,9 @@ export async function disconnect() {
 	}
 }
 
-/**
- * Check if streaming is currently active
- */
 async function isStreamingActive() {
 	let streamingState = false;
 
-	// We'll use a combination of checking the store and a direct API check if needed
 	const unsubscribe = isStreaming.subscribe((value) => {
 		streamingState = value;
 	});
@@ -113,9 +99,6 @@ async function isStreamingActive() {
 	return streamingState;
 }
 
-/**
- * Initialize WebSocket connection
- */
 export function initWebSocket() {
 	cleanupWebSocket();
 
@@ -146,16 +129,13 @@ export function initWebSocket() {
 			clearTimeout(connectionTimeout);
 			addLog('WebSocket connection established');
 
-			// Reset reconnect attempts
 			if (reconnectTimer) {
 				clearTimeout(reconnectTimer);
 				reconnectTimer = null;
 			}
 
-			// Start heartbeat
 			startHeartbeat();
 
-			// Configure WebSocket for real-time
 			socket.send(
 				JSON.stringify({
 					type: 'config',
@@ -177,13 +157,11 @@ export function initWebSocket() {
 		socket.onclose = (event) => {
 			console.log(`WebSocket closed (code: ${event.code}, reason: ${event.reason})`);
 
-			// Clean up heartbeat
 			if (heartbeatInterval) {
 				clearInterval(heartbeatInterval);
 				heartbeatInterval = null;
 			}
 
-			// Schedule reconnect if not intentionally closed
 			if (event.code !== 1000) {
 				scheduleReconnect();
 			}
@@ -196,9 +174,6 @@ export function initWebSocket() {
 	}
 }
 
-/**
- * Schedule WebSocket reconnection
- */
 function scheduleReconnect(delay = 5000) {
 	if (reconnectTimer) {
 		clearTimeout(reconnectTimer);
@@ -210,9 +185,6 @@ function scheduleReconnect(delay = 5000) {
 	}, delay);
 }
 
-/**
- * Start heartbeat to keep connection alive
- */
 function startHeartbeat() {
 	if (heartbeatInterval) {
 		clearInterval(heartbeatInterval);
@@ -222,7 +194,6 @@ function startHeartbeat() {
 
 	heartbeatInterval = setInterval(() => {
 		if (socket && socket.readyState === WebSocket.OPEN) {
-			// Check if we've received a response to previous ping
 			const now = Date.now();
 			if (now - lastHeartbeatResponse > 30000) {
 				console.warn('No heartbeat response - reconnecting');
@@ -231,7 +202,6 @@ function startHeartbeat() {
 				return;
 			}
 
-			// Send heartbeat
 			socket.send(
 				JSON.stringify({
 					type: 'ping',
@@ -239,20 +209,15 @@ function startHeartbeat() {
 				})
 			);
 		}
-	}, 15000); // 15 seconds
+	}, 15000);
 }
 
-/**
- * Handle WebSocket messages
- */
 function handleWebSocketMessage(event) {
 	try {
 		const data = JSON.parse(event.data);
 
-		// Update heartbeat timestamp on any message
 		lastHeartbeatResponse = Date.now();
 
-		// Process different message types
 		if (data.type === 'sensorData') {
 			processSensorData(data);
 		} else if (data.type === 'log') {
@@ -265,15 +230,10 @@ function handleWebSocketMessage(event) {
 	}
 }
 
-/**
- * Process sensor data from WebSocket
- */
 function processSensorData(data) {
 	try {
-		// Log data reception for debugging
 		console.log('Processing sensor data:', data?.data?.sensorData?.sequence || 'unknown sequence');
 
-		// Extract sensor data
 		let extractedData;
 		if (data.data && data.data.sensorData) {
 			extractedData = data.data.sensorData;
@@ -283,9 +243,7 @@ function processSensorData(data) {
 			extractedData = data;
 		}
 
-		// Process valid data with explicit validation
 		if (extractedData && typeof extractedData === 'object') {
-			// Debug active sensors
 			const sensorCount = Object.keys(extractedData).filter((k) => k.startsWith('S')).length;
 
 			console.log(
@@ -297,20 +255,14 @@ function processSensorData(data) {
 
 			setStreaming(true);
 
-			// Track reception for statistics
 			trackDataReception(extractedData);
 
-			// Update timestamp
 			setLastDataTimestamp(Date.now());
 
-			// CRITICAL FIX: Update BOTH stores to ensure data flows to UI components
-			// The connectionStore's sensorData
 			sensorData.set(extractedData);
 
-			// The motionStore's sensorData
 			updateSensorData(extractedData);
 
-			// Ensure visualization updates at next animation frame
 			scheduleVisualUpdate();
 		} else {
 			console.warn('Invalid sensor data structure:', extractedData);
@@ -320,21 +272,15 @@ function processSensorData(data) {
 	}
 }
 
-/**
- * Process log message from WebSocket
- */
 function processLogMessage(data) {
 	if (!data.message) return;
 
-	// CRITICAL FIX: Always add logs to the store first
 	addLog(data.message);
 
-	// Then do other processing
 	if (data.message.includes('reconnected to new port')) {
 		handlePortChange(data.message);
 	}
 
-	// Detect streaming status from logs
 	if (
 		data.message.includes('Sensor reading started') ||
 		data.message.includes('UDP server started for sensor data') ||
@@ -352,7 +298,6 @@ function processLogMessage(data) {
 		setStreaming(false);
 	}
 
-	// Process QUAT_DATA in logs only if not getting direct sensor messages
 	const now = Date.now();
 	let lastTimestamp = 0;
 
@@ -369,11 +314,9 @@ function processLogMessage(data) {
 			trackDataReception(parsedData);
 			setLastDataTimestamp(now);
 
-			// Update both stores
 			sensorData.set(parsedData);
 			updateSensorData(parsedData);
 
-			// Log the parsed data
 			console.log(
 				'Parsed QUAT_DATA from log:',
 				Object.keys(parsedData).filter((k) => k.startsWith('S')).length,
@@ -384,9 +327,6 @@ function processLogMessage(data) {
 	}
 }
 
-/**
- * Handle port change notification
- */
 function handlePortChange(message) {
 	const match = message.match(/new port ([^ ]+)/);
 	if (match && match[1]) {
@@ -404,7 +344,6 @@ function handlePortChange(message) {
 				`Device has reconnected on port ${newPort} (was ${currentPort}). Port selection has been updated.`
 			);
 
-			// Refresh port list in UI
 			setTimeout(() => {
 				loadAvailablePorts();
 			}, 1000);
@@ -412,27 +351,20 @@ function handlePortChange(message) {
 	}
 }
 
-/**
- * Clean up WebSocket connection
- */
 function cleanupWebSocket() {
-	// Clear any intervals
 	if (heartbeatInterval) {
 		clearInterval(heartbeatInterval);
 		heartbeatInterval = null;
 	}
 
 	if (socket) {
-		// Remove all event listeners
 		socket.onopen = null;
 		socket.onmessage = null;
 		socket.onclose = null;
 		socket.onerror = null;
 
-		// Close connection if open
 		if (socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) {
 			try {
-				// Use 1000 (normal closure) for intentional disconnects
 				socket.close(1000, 'Intentional disconnect');
 			} catch (e) {
 				console.error('Error closing socket during cleanup:', e);
@@ -442,16 +374,12 @@ function cleanupWebSocket() {
 	}
 }
 
-/**
- * Send command via WebSocket
- */
 export function sendCommand(command) {
 	if (!socket || socket.readyState !== WebSocket.OPEN) {
 		console.error('Cannot send command: WebSocket not connected');
 		return false;
 	}
 
-	// Update UI state for immediate feedback
 	if (command === 'S') {
 		setStreaming(true);
 		resetPacketCount();
@@ -479,9 +407,6 @@ export function sendCommand(command) {
 	}
 }
 
-/**
- * Load available serial ports
- */
 export async function loadAvailablePorts() {
 	const response = await fetch('/api/ports');
 	const data = await response.json();
@@ -493,9 +418,6 @@ export async function loadAvailablePorts() {
 	}
 }
 
-/**
- * Schedule visualization update using requestAnimationFrame
- */
 function scheduleVisualUpdate() {
 	if (!animFrameId) {
 		animFrameId = requestAnimationFrame(() => {

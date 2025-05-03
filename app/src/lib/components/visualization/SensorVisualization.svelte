@@ -8,10 +8,8 @@
 		debugMode,
 		loading,
 		setLoading,
-		debugEnabled,
 		showCalibration,
 		bodyProportions,
-		recordedAnimations,
 		currentPlayback,
 		isRecording
 	} from '$lib/stores/motionStore.js';
@@ -19,21 +17,14 @@
 	import { setupScene, cleanupScene } from '$lib/three/engine.js';
 	import { createBasicModel, loadModel } from '$lib/three/models.js';
 	import { applyEnvironment } from '$lib/three/environments.js';
-	import {
-		updateModelWithSensorData,
-		setSkeletonVisibility,
-		resetModelPose
-	} from '$lib/three/animation.js';
+	import { updateModelWithSensorData, resetModelPose } from '$lib/three/animation.js';
 	import { resetDataFormatCache } from '$lib/motion/sensors.js';
 
-	// Import calibration-related components
 	import CalibrationPanel from '$lib/components/calibration/CalibrationPanel.svelte';
 	import RecordingPanel from '$lib/components/playback/RecordingPanel.svelte';
 
-	// Props using Svelte 5 runes syntax
 	let { data = {}, isConnected = false } = $props();
 
-	// Local state with Svelte 5 $state rune
 	let container;
 	let sceneContext = $state(null);
 	let initialized = $state(false);
@@ -42,10 +33,8 @@
 	let lastSequence = $state(0);
 	let showRecording = $state(false);
 
-	// Animation frame reference
 	let animationFrame = null;
 
-	// Model change handler using Svelte 5 event syntax
 	function handleModelChange(event) {
 		const newModelId = event.target.value;
 		console.log(`Model changed via select: ${newModelId}`);
@@ -53,7 +42,6 @@
 		changeModel(newModelId);
 	}
 
-	// Environment change handler
 	function handleEnvironmentChange(event) {
 		const newEnvId = event.target.value;
 		console.log(`Environment changed via select: ${newEnvId}`);
@@ -61,13 +49,11 @@
 		changeEnvironment(newEnvId);
 	}
 
-	// Direct model change function
 	async function changeModel(modelId) {
 		if (!sceneContext || !initialized) return;
 
 		console.log(`Changing model directly to: ${modelId} (current: ${currentModelId})`);
 
-		// Skip if same model
 		if (modelId === currentModelId) {
 			console.log('Model unchanged, skipping reload');
 			return;
@@ -75,17 +61,14 @@
 
 		setLoading(true);
 		try {
-			// Reset data format cache when changing models
 			resetDataFormatCache();
 
-			// First clear previous model
 			if (sceneContext.model) {
 				console.log('Removing previous model');
 				sceneContext.scene.remove(sceneContext.model);
 				sceneContext.model = null;
 			}
 
-			// Clear previous skeleton helper
 			if (sceneContext.skeleton) {
 				console.log('Removing previous skeleton');
 				sceneContext.scene.remove(sceneContext.skeleton);
@@ -99,13 +82,11 @@
 				await loadModel(sceneContext, modelId);
 			}
 
-			// Apply body proportions when model changes
 			applyBodyProportions();
 
 			currentModelId = modelId;
 			console.log(`Model successfully changed to: ${modelId}`);
 
-			// Update skeleton visibility immediately after loading
 			if (sceneContext.skeleton) {
 				const skeletonVisible = $showSkeleton;
 				console.log(`Setting skeleton visibility to: ${skeletonVisible}`);
@@ -118,7 +99,6 @@
 		}
 	}
 
-	// Environment change function
 	function changeEnvironment(envId) {
 		if (!sceneContext || !initialized) return;
 
@@ -126,13 +106,10 @@
 		applyEnvironment(sceneContext, envId);
 	}
 
-	// Apply body proportions to the model
 	function applyBodyProportions() {
 		if (!sceneContext || !sceneContext.model) return;
 
-		// For basic model, apply scaling directly
 		if (currentModelId === 'basic' && sceneContext.basicModelParts) {
-			// Apply arm length scaling
 			const armScale = $bodyProportions.armLength;
 			if (
 				sceneContext.basicModelParts.rightUpperArm &&
@@ -144,7 +121,6 @@
 				sceneContext.basicModelParts.leftLowerArm.limb.scale.y = armScale;
 			}
 
-			// Apply leg length scaling
 			const legScale = $bodyProportions.legLength;
 			if (
 				sceneContext.basicModelParts.rightUpperLeg &&
@@ -156,23 +132,18 @@
 				sceneContext.basicModelParts.leftLowerLeg.limb.scale.y = legScale;
 			}
 
-			// Reposition joints after scaling
 			updateJointPositions();
-		}
-		// For loaded models, scale the entire model
-		else if (currentModelId !== 'basic') {
+		} else if (currentModelId !== 'basic') {
 			const overallScale = $bodyProportions.height;
 			sceneContext.model.scale.set(overallScale, overallScale, overallScale);
 		}
 	}
 
-	// Update joint positions based on limb scaling
 	function updateJointPositions() {
 		if (currentModelId !== 'basic' || !sceneContext.basicModelParts) return;
 
-		// Update lower arm joint positions based on upper arm scaling
 		const armScale = $bodyProportions.armLength;
-		const LIMB_LENGTH = 40; // Same as in models.js
+		const LIMB_LENGTH = 40;
 
 		// Right arm
 		if (sceneContext.basicModelParts.rightUpperArm && sceneContext.basicModelParts.rightLowerArm) {
@@ -210,14 +181,12 @@
 		}
 	}
 
-	// Animation loop using requestAnimationFrame instead of effect
 	function startAnimation() {
 		if (animationFrame) return;
 
 		function animate() {
 			animationFrame = requestAnimationFrame(animate);
 
-			// Process data only every 2-3 frames for better performance
 			if (frameCount++ % 3 === 0 && initialized && sceneContext && data) {
 				processSensorData();
 			}
@@ -233,9 +202,7 @@
 		}
 	}
 
-	// Process sensor data without triggering reactive updates
 	function processSensorData() {
-		// Check for new data via sequence
 		let hasNewData = true;
 
 		if ('sequence' in data) {
@@ -245,10 +212,8 @@
 			}
 		}
 
-		// Only process if we have new data
 		if (!hasNewData) return;
 
-		// Log data occasionally for debugging
 		if ($debugMode && lastSequence % 100 === 0) {
 			console.log('Processing sensor data:', {
 				sequence: lastSequence,
@@ -256,7 +221,6 @@
 			});
 		}
 
-		// Apply to model - try both data formats
 		if (data.sensorData) {
 			updateModelWithSensorData(sceneContext, data.sensorData, currentModelId);
 		} else if (typeof data === 'object' && Object.keys(data).some((k) => k.startsWith('S'))) {
@@ -264,22 +228,16 @@
 		}
 	}
 
-	// Watch data changes with a reactive statement, but don't call processSensorData directly
-	// This prevents infinite loops while still tracking when data changes
 	$effect(() => {
 		if (data && 'sequence' in data) {
-			// Just access data.sequence to create a dependency
-			// This ensures the effect runs when sequence changes
 			const seq = data.sequence;
 
-			// Don't do anything else here - the animation loop handles updates
 			if ($debugMode && seq % 500 === 0) {
 				console.log(`Data sequence updated to ${seq}`);
 			}
 		}
 	});
 
-	// Toggle skeleton visibility
 	function handleSkeletonToggle() {
 		const newValue = !$showSkeleton;
 		showSkeleton.set(newValue);
@@ -290,7 +248,6 @@
 		}
 	}
 
-	// Toggle debug mode
 	function handleDebugToggle() {
 		const newValue = !$debugMode;
 		debugMode.set(newValue);
@@ -310,7 +267,6 @@
 				}
 			}
 
-			// Force bone structure analysis on next update
 			if (sceneContext) {
 				sceneContext.bonesLogged = false;
 			}
@@ -320,35 +276,29 @@
 		}
 	}
 
-	// Reset model pose to default
 	function handleResetPose() {
 		if (sceneContext) {
 			resetModelPose(sceneContext);
 		}
 	}
 
-	// Toggle calibration panel
 	function handleToggleCalibration() {
 		showCalibration.update((value) => !value);
 	}
 
-	// Toggle recording panel
 	function handleToggleRecording() {
 		showRecording = !showRecording;
 	}
 
-	// Update body proportion
 	function updateProportion(property, value) {
 		bodyProportions.update((current) => ({
 			...current,
 			[property]: parseFloat(value)
 		}));
 
-		// Apply changes
 		applyBodyProportions();
 	}
 
-	// Handle input event for body proportion sliders
 	function handleProportionChange(property, event) {
 		if (event.currentTarget instanceof HTMLInputElement) {
 			updateProportion(property, event.currentTarget.value);
@@ -363,7 +313,6 @@
 				console.log('Setting up 3D scene');
 				sceneContext = await setupScene(container);
 
-				// Configure camera and controls
 				if (sceneContext.camera) {
 					sceneContext.camera.position.set(0, 100, 200);
 				}
@@ -378,7 +327,6 @@
 					sceneContext.controls.target.set(0, 100, 0);
 				}
 
-				// Initialize model and environment
 				const initialModelId = $selectedModel;
 				const initialEnvId = $selectedEnvironment;
 
@@ -393,10 +341,8 @@
 				}
 				currentModelId = initialModelId;
 
-				// Apply body proportions after model loading
 				applyBodyProportions();
 
-				// Set skeleton visibility
 				if (sceneContext.skeleton) {
 					const skeletonVisible = $showSkeleton;
 					console.log(`Initial skeleton visibility: ${skeletonVisible}`);
@@ -407,7 +353,6 @@
 				setLoading(false);
 				console.log('3D scene initialized successfully');
 
-				// Start animation loop
 				startAnimation();
 			} catch (err) {
 				console.error('Error initializing 3D scene:', err);
@@ -426,9 +371,7 @@
 		if (sceneContext) cleanupScene(sceneContext);
 	});
 
-	// Track body proportion changes
 	$effect(() => {
-		// When body proportions change, apply them
 		if (
 			initialized &&
 			sceneContext &&

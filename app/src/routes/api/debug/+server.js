@@ -6,7 +6,6 @@ export async function POST({ request }) {
 	try {
 		const data = await request.json();
 
-		// Set debug logging mode
 		if (data.debug !== undefined) {
 			setDebugLogging(!!data.debug);
 			return json({ success: true, debug: !!data.debug });
