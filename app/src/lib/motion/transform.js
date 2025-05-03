@@ -3,19 +3,19 @@ import { getSensorsWithData } from './sensors.js';
 
 export const DEFAULT_CORRECTIONS = {
 	RightUpperArm: {
-		rotationCorrection: [0, 90, 180],
+		rotationCorrection: [90, 0, 180],
 		axisInversion: [0, 0, 0]
 	},
 	RightLowerArm: {
-		rotationCorrection: [0, 90, 180],
+		rotationCorrection: [90, 0, 180],
 		axisInversion: [0, 0, 0]
 	},
 	LeftUpperArm: {
-		rotationCorrection: [0, -90, 180],
+		rotationCorrection: [90, 180, 0],
 		axisInversion: [0, 0, 0]
 	},
 	LeftLowerArm: {
-		rotationCorrection: [0, -90, 180],
+		rotationCorrection: [90, 180, 0],
 		axisInversion: [0, 0, 0]
 	},
 	RightUpperLeg: {
