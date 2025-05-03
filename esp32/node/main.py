@@ -638,7 +638,6 @@ def sensor_reading_thread():
             except Exception as e:
                 log("Error sending UDP packet: {}".format(e), LOG_WARNING)
             
-            # Ensure at least 50Hz, aiming for ~66Hz to account for processing overhead
             time.sleep_ms(15)
             
     except Exception as e:
