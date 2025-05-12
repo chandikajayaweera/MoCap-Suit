@@ -168,7 +168,7 @@ npm run cli
 
 The CLI provides direct access to all system commands and real-time data monitoring.
 
-![MoCap CLI](DOCS/images/CLI.png)
+![MoCap CLI](docs/images/CLI.png)
 
 ## Troubleshooting
 
