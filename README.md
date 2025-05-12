@@ -1,67 +1,180 @@
-# IMU Motion Capture System
+# Motion Capture System
 
-A cost-effective, modular, and wireless motion capture system using BNO055 IMU sensors, ESP32 microcontrollers, and a real-time 3D visualization interface.
+This repository contains the code and documentation for a low-cost, modular motion capture system based on BNO055 IMU sensors. The system consists of ESP32 microcontrollers, multiple BNO055 IMU sensors connected via an I2C multiplexer, and a web application for real-time 3D visualization.
 
-![Motion Capture System Application](docs/images/Application.png)
+## Table of Contents
 
-## Overview
-
-This motion capture system enables real-time tracking of body movements using inertial measurement units (IMUs). The system is designed to be affordable, portable, and versatile, making motion capture technology accessible for applications in gaming, sports analysis, physical rehabilitation, virtual reality, and more.
-
-### Key Features
-
-- **Real-time wireless motion tracking** using quaternion orientation data
-- **Modular design** supporting up to 8 BNO055 sensors for different body parts
-- **3D visualization interface** built with Svelte and Three.js
-- **Recording and playback** capabilities for motion data
-- **Calibration tools** for improved accuracy
-- **Command-line interface** for advanced control
+- [System Architecture](#system-architecture)
+- [Hardware Components](#hardware-components)
+- [Communication Protocol](#communication-protocol)
+- [Sensor Configuration](#sensor-configuration)
+- [Features](#features)
+- [Software Setup](#software-setup)
+- [Usage](#usage)
+- [Command Line Interface](#command-line-interface)
+- [Contributing](#Contributing)
+- [Troubleshooting](#Troubleshooting)
+- [License](#license)
+- [Acknowledgments](#Acknowledgments)
+- [Contact](#contact)
 
 ## System Architecture
 
 The system consists of three main components:
 
-1. **Sensor Node** (ESP32): Connects to multiple BNO055 IMU sensors via an I2C multiplexer, reads sensor data, and transmits it wirelessly to the receiver.
+1. **Sensor Node**: An ESP32-S3 microcontroller connected to eight BNO055 IMU sensors via a TCA9548A I2C multiplexer. The node reads sensor data and sends it to the receiver.
+   ![Sensor Node](docs/Images/Sensor-Node.png)
 
-2. **Receiver** (ESP32): Creates a WiFi access point, receives sensor data from the node, and forwards it to the computer via USB.
+2. **Receiver**: Another ESP32-S3 microcontroller that acts as a bridge between the sensor node and the computer. It creates a WiFi access point for the node to connect to and communicates with the computer via USB CDC.
+   ![Receiver](docs/Images/Receiver.jpg)
 
-3. **Control Application**: A web-based interface for real-time 3D visualization, motion recording, and system control.
+3. **Control Application**: A web application built with Svelte and Three.js for real-time 3D visualization and system control.
 
-![Sensor Node](docs/images/Sensor-Node.png)
+![Web Application](docs/Images/Application.png)
 
-![Receiver](docs/images/Receiver.jpg)
+## Hardware Components
 
-## Repository Structure
-
-```
-motion-capture-system/
-├── app/                      # Web application
-│   ├── src/                  # Source code
-│   │   ├── lib/              # Shared libraries
-│   │   │   ├── components/   # UI components
-│   │   │   ├── motion/       # Motion processing code
-│   │   │   ├── server/       # Server-side code
-│   │   │   ├── stores/       # Svelte stores
-│   │   │   └── three/        # Three.js visualization
-│   │   └── routes/           # Route components
-│   ├── mocap-cli/            # Command-line interface tool
-│   └── public/               # Static assets
-├── esp32/                    # ESP32 firmware
-│   ├── node/                 # Sensor node code
-│   └── receiver/             # Receiver code
-└── docs/                     # Documentation
-```
-
-## Hardware Requirements
-
-- 2× Xiao ESP32-S3 microcontrollers (for node and receiver)
-- Up to 8× BNO055 IMU sensors
+- 2× Xiao ESP32-S3 microcontrollers (Node and Receiver)
+- 8× BNO055 IMU sensors
 - 1× TCA9548A I2C multiplexer
-- 5-pin pogo pin connectors for sensor connections
-- Portable power bank
-- USB cables
-- 28AWG wire for connections
-- Solder and soldering equipment
+- Connecting wires and power supply
+
+## Communication Protocol
+
+The system uses multiple communication protocols for different purposes:
+
+### Network Configuration
+
+- The Receiver creates a WiFi access point with SSID "MotionCaptureAP"
+- The Node connects to this access point as a client
+- Static IP addressing is used:
+  - Receiver (AP): 192.168.4.1
+  - Node: 192.168.4.2
+
+### Communication Channels
+
+1. **TCP Protocol (Port 5006)**: Used for:
+   - Command and control messages
+   - System logs
+   - Status updates
+   - Heartbeat messages
+2. **UDP Protocol (Port 5005)**: Used for:
+
+   - High-frequency sensor data streaming
+   - Optimized for low latency and high throughput
+   - Includes sequence numbers for packet loss detection
+
+3. **USB CDC**: Used for:
+   - Communication between Receiver and computer
+   - Data forwarding from both TCP and UDP channels
+
+### Command System
+
+The system implements a robust command protocol over TCP:
+
+| Command | Description                                           |
+| ------- | ----------------------------------------------------- |
+| S       | Start streaming sensor data                           |
+| X       | Stop streaming sensor data                            |
+| C       | Check sensor status                                   |
+| I       | Initialize/reinitialize sensors                       |
+| N       | Restart node                                          |
+| R       | Restart receiver                                      |
+| P       | Ping node (connection test)                           |
+| D:n     | Set debug level (0=DEBUG, 1=INFO, 2=WARNING, 3=ERROR) |
+| Q       | Quit (emergency stop)                                 |
+
+## Sensor Configuration
+
+### BNO055 Sensor Configuration
+
+The BNO055 sensors provide 9-axis motion tracking with built-in sensor fusion. They output:
+
+- Quaternion orientation data
+- Calibration status
+- Temperature readings
+
+### I2C Multiplexer Setup
+
+The system connects 8 BNO055 sensors using a TCA9548A I2C multiplexer. The configuration is:
+
+- TCA9548A I2C Address: 0x70
+- BNO055 Sensors:
+  - Sensors alternate between addresses 0x28 and 0x29
+  - Each multiplexer channel hosts 2 sensors (one at each address)
+
+![Multiplexer Setup](docs/Images/Multiplexer-Setup.png)
+
+## Features
+
+### Node Features
+
+1. **Multi-Sensor Management**:
+
+   - Efficiently reads data from 8 BNO055 sensors using I2C multiplexing
+   - Implements time-division access to each sensor
+   - Handles sensor calibration and status monitoring
+
+2. **Robust Communication**:
+
+   - Sends sensor data via UDP for high-frequency streaming
+   - Uses TCP for commands, logs, and heartbeats
+   - Implements error handling and retry mechanisms
+
+3. **Advanced Error Recovery**:
+
+   - Detects and handles sensor disconnections
+   - Provides I2C bus recovery mechanisms
+   - Implements multiplexer reset capabilities
+
+4. **System Monitoring**:
+   - Tracks memory usage
+   - Reports active sensor count
+   - Provides detailed logging with configurable verbosity
+
+### Receiver Features
+
+1. **Network Management**:
+
+   - Creates and manages WiFi access point
+   - Handles TCP and UDP socket creation
+   - Monitors network connections
+
+2. **Command Processing**:
+
+   - Routes commands from computer to node
+   - Processes responses and forwards to computer
+   - Implements command validation and error handling
+
+3. **Data Streaming**:
+
+   - Receives UDP sensor data from node
+   - Processes and forwards to computer
+   - Tracks packet statistics (lost packets, rate)
+
+4. **USB Communication**:
+   - Provides interface between wireless network and computer
+   - Handles bidirectional communication
+   - Formats data for downstream processing
+
+### Web Application Features
+
+1. **Real-time Visualization**:
+
+   - 3D model rendering with Three.js
+   - Real-time motion tracking
+   - Customizable visualization options
+
+2. **System Control**:
+
+   - Command interface for system control
+   - Status monitoring and notifications
+   - Diagnostic tools
+
+3. **Data Processing**:
+   - Sensor data parsing and interpretation
+   - Calibration and correction tools
+   - Performance analytics
 
 ## Software Setup
 
@@ -125,7 +238,7 @@ Attach the sensors to the following body parts:
 - Sensor 6: Right Lower Arm
 - Sensor 7: Right Upper Arm
 
-![MoCap Suit](docs/images/MoCap-Suit.png)
+![MoCap Suit](docs/Images/MoCap-Suit.png)
 
 ### Calibration
 
@@ -144,7 +257,7 @@ Attach the sensors to the following body parts:
 
 ### Command Interface
 
-The system supports several commands:
+The system supports the following commands:
 
 - **S**: Start streaming
 - **X**: Stop streaming
@@ -168,7 +281,7 @@ npm run cli
 
 The CLI provides direct access to all system commands and real-time data monitoring.
 
-![MoCap CLI](DOCS/images/CLI.png)
+![MoCap CLI](docs/Images/CLI.png)
 
 ## Troubleshooting
 
@@ -195,7 +308,15 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0).
+
+### What this means:
+
+- You are free to share and adapt this work for non-commercial purposes
+- You must provide appropriate credit to the original author (Nambige C Jayaweera)
+- You cannot use this work for commercial purposes without permission
+
+For more details, see the [full license text](https://creativecommons.org/licenses/by-nc/4.0/legalcode).
 
 ## Acknowledgments
 
@@ -206,4 +327,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Contact
 
-If you have any questions or feedback, please open an issue in the GitHub repository.
+If you have any questions or feedback, please open an issue in the GitHub repository or email me at chandikajayaweera@pm.me
